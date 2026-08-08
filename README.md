@@ -56,7 +56,7 @@ Webhook URLはパスワード同然です。README、プログラム、Actions�
 | `COOLDOWN_HOURS` | 12 | 同じ配信者を再通知しない時間 |
 | `ERROR_NOTIFY_COOLDOWN_HOURS` | 6 | 監視エラー通知の最短間隔 |
 | `HEARTBEAT_DAYS` | 7 | 定期実行の自動停止を防ぐ生存記録の間隔 |
-| `RELAY_ENABLED` | true | 5分リレーの有効・停止（通常は変更不要） |
+| `RELAY_ENABLED` | 未設定 | `false` にすると5分リレーを停止。それ以外は有効 |
 
 ## 動作の要点
 
