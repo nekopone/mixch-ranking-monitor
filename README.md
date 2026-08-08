@@ -64,6 +64,7 @@ Webhook URLはパスワード同然です。README、プログラム、Actions�
 - 通知履歴は `monitor-state` ブランチの `state.json` に保存します。Webhook URLは保存しません。
 - 状態ファイルが壊れた場合、未通知扱いにして大量再送せず、処理を失敗させてDiscordへ監視エラーを通知します。
 - 公開リポジトリの定期実行が60日無活動で止まらないよう、7日に一度だけ状態を更新します。
+- 元サイトがGitHubの実行機へ空の本文を返した場合だけ、[Jina Reader](https://jina.ai/reader/)へキャッシュ無効・HTML形式を指定して公開ページを取得します。通常は元サイトへ直接アクセスします。
 - 外部Pythonパッケージは使いません。毎回のインストール時間と通信量を減らしています。
 
 ## 手動で通知候補だけ確認する
@@ -86,4 +87,3 @@ python3 -m unittest discover -s tests -v
 ```bash
 DRY_RUN=true MOMENTUM_THRESHOLD=0 python3 -m src.mixch_monitor
 ```
-

@@ -4,7 +4,9 @@ import json
 import os
 import tempfile
 import unittest
+from email.message import Message
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +15,7 @@ from src.mixch_monitor import (
     StateError,
     Stream,
     build_stream_embed,
+    fetch_page,
     load_state,
     maintain_state,
     mark_notified,
@@ -75,6 +78,49 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(1, len(parsed))
         self.assertEqual("名称未設定（ID: 9738940）", parsed[0].broadcaster_name)
         self.assertEqual(74, parsed[0].elapsed_minutes)
+
+
+class FetchTests(unittest.TestCase):
+    class FakeResponse:
+        def __init__(self, body: bytes, status: int = 200) -> None:
+            self._body = BytesIO(body)
+            self.status = status
+            self.headers = Message()
+            self.headers["Content-Type"] = "text/html; charset=utf-8"
+
+        def read(self) -> bytes:
+            return self._body.read()
+
+        def __enter__(self) -> "FetchTests.FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    def test_uses_fresh_html_fallback_when_direct_response_is_empty(self) -> None:
+        fixture = FIXTURE.read_bytes() + b" " * 2_000
+        responses = [self.FakeResponse(b""), self.FakeResponse(fixture)]
+
+        with patch("src.mixch_monitor.urlopen", side_effect=responses) as mocked:
+            html = fetch_page("https://live-ranking.com/v/mixch", 30)
+
+        self.assertIn("live_list_header1", html)
+        self.assertEqual(2, mocked.call_count)
+        fallback_request = mocked.call_args_list[1].args[0]
+        self.assertEqual(
+            "https://r.jina.ai/https://live-ranking.com/v/mixch",
+            fallback_request.full_url,
+        )
+
+    def test_does_not_use_fallback_when_direct_response_is_valid(self) -> None:
+        fixture = FIXTURE.read_bytes() + b" " * 2_000
+        with patch(
+            "src.mixch_monitor.urlopen", return_value=self.FakeResponse(fixture)
+        ) as mocked:
+            html = fetch_page("https://live-ranking.com/v/mixch", 30)
+
+        self.assertIn("live_list_header1", html)
+        self.assertEqual(1, mocked.call_count)
 
 
 class EligibilityTests(unittest.TestCase):

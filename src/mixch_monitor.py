@@ -32,6 +32,7 @@ DEFAULT_COOLDOWN_HOURS = 12.0
 DEFAULT_ERROR_COOLDOWN_HOURS = 6.0
 DEFAULT_HEARTBEAT_DAYS = 7.0
 DEFAULT_TIMEOUT_SECONDS = 30.0
+READER_FALLBACK_PREFIX = "https://r.jina.ai/"
 
 STATE_VERSION = 1
 DISCORD_EMBED_COLOR = 0xFF4D87
@@ -338,40 +339,77 @@ def _normalise_stream(raw: _RawStream) -> Stream:
 
 
 def fetch_page(url: str, timeout_seconds: float) -> str:
-    """対象ページを1回だけ取得する。"""
+    """対象ページを取得する。
 
-    request = Request(
-        url,
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (compatible; MixchRankingMonitor/1.0; "
-                "+https://github.com/nekopone/mixch-ranking-monitor)"
-            ),
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Language": "ja-JP,ja;q=0.9",
-            "Cache-Control": "no-cache",
-        },
+    live-ranking.com は一部のGitHubホスト実行機にHTTP 200かつ空本文を
+    返すことがある。まず原典へ直接アクセスし、取得できない場合だけ
+    Jina Readerへキャッシュ無効・HTML形式を指定して退避する。
+    """
+
+    standard_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (compatible; MixchRankingMonitor/1.0; "
+            "+https://github.com/nekopone/mixch-ranking-monitor)"
+        ),
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "ja-JP,ja;q=0.9",
+        "Cache-Control": "no-cache",
+    }
+
+    direct_error: MonitorError | None = None
+    try:
+        html = _download_text(url, standard_headers, timeout_seconds, "監視ページ")
+        if len(html) >= 1_000:
+            return html
+        direct_error = MonitorError(
+            f"監視ページの直接応答が短すぎます ({len(html)}文字)"
+        )
+    except MonitorError as exc:
+        direct_error = exc
+
+    LOGGER.warning("直接取得に失敗したためHTML退避経路を使います: %s", direct_error)
+
+    fallback_url = f"{READER_FALLBACK_PREFIX}{url}"
+    fallback_headers = {
+        "User-Agent": "MixchRankingMonitor/1.0",
+        "Accept": "text/plain",
+        # 5分監視で古いランキングを再利用しない。
+        "X-No-Cache": "true",
+        # Markdownではなく元ページに近いHTMLを返してもらい、同じ解析器を使う。
+        "X-Respond-With": "html",
+    }
+    html = _download_text(
+        fallback_url, fallback_headers, timeout_seconds, "HTML退避経路"
     )
+    if len(html) < 1_000:
+        raise MonitorError(f"HTML退避経路の応答が短すぎます ({len(html)}文字)")
+    return html
+
+
+def _download_text(
+    url: str, headers: dict[str, str], timeout_seconds: float, label: str
+) -> str:
+    """HTTP応答を文字列として読む。URL自体は例外へ含めず、秘密の誤表示を防ぐ。"""
+
+    request = Request(url, headers=headers)
 
     try:
         with urlopen(request, timeout=timeout_seconds) as response:
             status = getattr(response, "status", 200)
             if status != 200:
-                raise MonitorError(f"監視ページがHTTP {status}を返しました")
+                raise MonitorError(f"{label}がHTTP {status}を返しました")
             body = response.read()
             charset = response.headers.get_content_charset() or "utf-8"
     except HTTPError as exc:
-        raise MonitorError(f"監視ページがHTTP {exc.code}を返しました") from exc
+        raise MonitorError(f"{label}がHTTP {exc.code}を返しました") from exc
     except (URLError, TimeoutError, OSError) as exc:
-        raise MonitorError(f"監視ページの取得に失敗しました ({type(exc).__name__})") from exc
+        raise MonitorError(f"{label}の取得に失敗しました ({type(exc).__name__})") from exc
 
     try:
         html = body.decode(charset, errors="strict")
     except (LookupError, UnicodeDecodeError):
         html = body.decode("utf-8", errors="replace")
 
-    if len(html) < 1_000:
-        raise MonitorError(f"監視ページの応答が短すぎます ({len(html)}文字)")
     return html
 
 
