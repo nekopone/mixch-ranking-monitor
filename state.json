@@ -3,6 +3,12 @@
     "last_error_notified_at": "2026-08-08T11:50:42Z",
     "last_heartbeat_at": "2026-08-08T02:10:33Z"
   },
-  "notifications": {},
+  "notifications": {
+    "18940828": {
+      "broadcaster_name": "おぴよぴJCミスコン2026",
+      "last_notified_at": "2026-08-08T11:55:49Z",
+      "url": "https://mixch.tv/u/18940828/live"
+    }
+  },
   "version": 1
 }
