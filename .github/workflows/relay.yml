@@ -1,0 +1,57 @@
+name: MixChannel 5分リレー
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: mixch-ranking-monitor-relay
+  cancel-in-progress: false
+
+jobs:
+  wait-and-dispatch:
+    if: ${{ vars.RELAY_ENABLED == 'true' }}
+    environment: five-minute-delay
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: 本番監視を起動
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if gh workflow run ranking-monitor.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref main \
+              -f dry_run=false \
+              -f test_webhook=false; then
+              exit 0
+            fi
+            echo "監視起動に失敗しました（$attempt/3）。5秒後に再試行します。"
+            sleep 5
+          done
+          exit 1
+
+      - name: 次回リレーを予約
+        if: ${{ always() && vars.RELAY_ENABLED == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if gh workflow run relay.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref main; then
+              exit 0
+            fi
+            echo "次回リレーの予約に失敗しました（$attempt/3）。5秒後に再試行します。"
+            sleep 5
+          done
+          exit 1
