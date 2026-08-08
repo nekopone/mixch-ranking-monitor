@@ -1,0 +1,912 @@
+#!/usr/bin/env python3
+"""ライブランキングZのMixChannel欄を監視してDiscordへ通知する。
+
+外部パッケージを使わず、GitHub Actionsの起動をなるべく短く保つ設計。
+しきい値や再通知までの時間は環境変数（GitHubのRepository variables）で
+変更できる。
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
+from pathlib import Path
+from typing import Any, Iterable, Sequence
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+
+
+LOGGER = logging.getLogger("mixch-ranking-monitor")
+
+DEFAULT_MONITOR_URL = "https://live-ranking.com/v/mixch"
+DEFAULT_THRESHOLD = 150
+DEFAULT_COOLDOWN_HOURS = 12.0
+DEFAULT_ERROR_COOLDOWN_HOURS = 6.0
+DEFAULT_HEARTBEAT_DAYS = 7.0
+DEFAULT_TIMEOUT_SECONDS = 30.0
+
+STATE_VERSION = 1
+DISCORD_EMBED_COLOR = 0xFF4D87
+MAX_EMBEDS_PER_MESSAGE = 5
+
+
+class MonitorError(RuntimeError):
+    """監視処理で利用者に知らせるべき異常。"""
+
+
+class ParseError(MonitorError):
+    """監視ページの構造を安全に読み取れなかった場合。"""
+
+
+class StateError(MonitorError):
+    """再通知抑制用の状態ファイルが壊れている場合。"""
+
+
+class NotificationError(MonitorError):
+    """Discord通知に失敗した場合。"""
+
+
+@dataclass(frozen=True, slots=True)
+class Stream:
+    """ランキングに掲載されている1配信。"""
+
+    user_id: str
+    broadcaster_name: str
+    title: str
+    url: str
+    momentum: int
+    rank: int | None
+    elapsed_minutes: int | None
+    elapsed_text: str
+
+
+@dataclass(frozen=True, slots=True)
+class Config:
+    """環境変数から読み込む実行設定。"""
+
+    monitor_url: str
+    momentum_threshold: int
+    cooldown_hours: float
+    error_cooldown_hours: float
+    heartbeat_days: float
+    request_timeout_seconds: float
+    state_file: Path
+    discord_webhook_url: str
+    dry_run: bool
+    test_webhook: bool
+    notify_on_error: bool
+
+    @classmethod
+    def from_environment(cls) -> "Config":
+        monitor_url = os.getenv("MONITOR_URL", DEFAULT_MONITOR_URL).strip()
+        _validate_https_url(monitor_url, "MONITOR_URL")
+
+        webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+        if webhook_url:
+            _validate_discord_webhook_url(webhook_url)
+
+        return cls(
+            monitor_url=monitor_url,
+            momentum_threshold=_read_int(
+                "MOMENTUM_THRESHOLD", DEFAULT_THRESHOLD, minimum=0, maximum=1_000_000
+            ),
+            cooldown_hours=_read_float(
+                "COOLDOWN_HOURS", DEFAULT_COOLDOWN_HOURS, minimum=0.01, maximum=8_760
+            ),
+            error_cooldown_hours=_read_float(
+                "ERROR_NOTIFY_COOLDOWN_HOURS",
+                DEFAULT_ERROR_COOLDOWN_HOURS,
+                minimum=0.25,
+                maximum=168,
+            ),
+            heartbeat_days=_read_float(
+                "HEARTBEAT_DAYS", DEFAULT_HEARTBEAT_DAYS, minimum=1, maximum=30
+            ),
+            request_timeout_seconds=_read_float(
+                "REQUEST_TIMEOUT_SECONDS",
+                DEFAULT_TIMEOUT_SECONDS,
+                minimum=5,
+                maximum=120,
+            ),
+            state_file=Path(os.getenv("STATE_FILE", "state.json")),
+            discord_webhook_url=webhook_url,
+            dry_run=_read_bool("DRY_RUN", False),
+            test_webhook=_read_bool("TEST_WEBHOOK", False),
+            notify_on_error=_read_bool("NOTIFY_ON_ERROR", True),
+        )
+
+
+@dataclass(slots=True)
+class _RawStream:
+    """HTML解析中だけ使う未検証データ。"""
+
+    user_id: str = ""
+    broadcaster_name: str = ""
+    title: str = ""
+    url: str = ""
+    momentum_text: str = ""
+    rank_text: str = ""
+    elapsed_text: str = ""
+    elapsed_title: str = ""
+
+
+class _RankingParser(HTMLParser):
+    """対象ページの各 ``div#livebox`` を読む小さな専用パーサー。
+
+    正規表現だけでHTML全体を切るより、入れ子や文字実体参照に強い。
+    一方、外部HTML解析ライブラリを毎回インストールする必要もない。
+    """
+
+    _TARGET_FIELDS = {
+        "live_rankNum": "rank_text",
+        "live_title": "title",
+        "live_name": "broadcaster_name",
+        "live_viewer": "momentum_text",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.raw_streams: list[_RawStream] = []
+        self.livebox_count = 0
+        self.broadcast_count: int | None = None
+        self._current: _RawStream | None = None
+        self._livebox_div_depth = 0
+        self._capture_field: str | None = None
+        self._capture_end_tag: str | None = None
+        self._capture_same_tag_depth = 0
+        self._capture_parts: list[str] = []
+        self._header_capture = False
+        self._header_parts: list[str] = []
+
+    def handle_starttag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        attr = {key: value or "" for key, value in attrs}
+        classes = set(attr.get("class", "").split())
+
+        if tag == "span" and attr.get("id") == "live_list_header1":
+            self._header_capture = True
+            self._header_parts = []
+
+        if tag == "div" and attr.get("id") == "livebox":
+            # 壊れたHTMLで前のliveboxが閉じていなくても、前項目を捨てずに確定する。
+            if self._current is not None:
+                self._finish_current()
+            self.livebox_count += 1
+            self._current = _RawStream(user_id=attr.get("data-uid", ""))
+            self._livebox_div_depth = 1
+            return
+
+        if self._current is None:
+            return
+
+        if tag == "div":
+            self._livebox_div_depth += 1
+
+        if self._capture_field and tag == self._capture_end_tag:
+            self._capture_same_tag_depth += 1
+
+        if not self._capture_field:
+            for class_name, field_name in self._TARGET_FIELDS.items():
+                if class_name in classes:
+                    self._begin_capture(field_name, tag)
+                    break
+
+            if tag == "a" and "live_timenum" in classes:
+                self._current.elapsed_title = attr.get("title", "")
+                self._begin_capture("elapsed_text", tag)
+
+        href = attr.get("href", "")
+        if href and _extract_mixch_user_id(href):
+            self._current.url = href
+
+    def handle_startendtag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        # 対象箇所のvoid要素はテキストを持たないので、URLだけ通常処理に任せる。
+        self.handle_starttag(tag, attrs)
+
+    def handle_data(self, data: str) -> None:
+        if self._header_capture:
+            self._header_parts.append(data)
+        if self._capture_field:
+            self._capture_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "span" and self._header_capture:
+            header = _clean_text("".join(self._header_parts))
+            match = re.search(r"\[(\d+)人放送中\]", header)
+            if match:
+                self.broadcast_count = int(match.group(1))
+            self._header_capture = False
+
+        if self._current is None:
+            return
+
+        if self._capture_field and tag == self._capture_end_tag:
+            if self._capture_same_tag_depth > 0:
+                self._capture_same_tag_depth -= 1
+            else:
+                value = _clean_text("".join(self._capture_parts))
+                setattr(self._current, self._capture_field, value)
+                self._capture_field = None
+                self._capture_end_tag = None
+                self._capture_parts = []
+
+        if tag == "div":
+            self._livebox_div_depth -= 1
+            if self._livebox_div_depth <= 0:
+                self._finish_current()
+
+    def close(self) -> None:
+        super().close()
+        if self._current is not None:
+            self._finish_current()
+
+    def _begin_capture(self, field_name: str, end_tag: str) -> None:
+        self._capture_field = field_name
+        self._capture_end_tag = end_tag
+        self._capture_same_tag_depth = 0
+        self._capture_parts = []
+
+    def _finish_current(self) -> None:
+        assert self._current is not None
+        self.raw_streams.append(self._current)
+        self._current = None
+        self._livebox_div_depth = 0
+        self._capture_field = None
+        self._capture_end_tag = None
+        self._capture_same_tag_depth = 0
+        self._capture_parts = []
+
+
+def parse_ranking_page(html: str) -> list[Stream]:
+    """ランキングHTMLを検証し、配信一覧へ変換する。"""
+
+    parser = _RankingParser()
+    parser.feed(html)
+    parser.close()
+
+    streams: list[Stream] = []
+    skipped = 0
+    for raw in parser.raw_streams:
+        try:
+            streams.append(_normalise_stream(raw))
+        except ParseError as exc:
+            skipped += 1
+            LOGGER.warning("配信枠を1件読み飛ばしました: %s", exc)
+
+    if parser.broadcast_count and parser.livebox_count == 0:
+        raise ParseError(
+            f"放送中は{parser.broadcast_count}件と表示されていますが、配信枠を取得できません"
+        )
+    if parser.livebox_count and not streams:
+        raise ParseError(
+            f"配信枠{parser.livebox_count}件の必要項目を1件も読み取れません"
+        )
+    if parser.livebox_count >= 5 and len(streams) / parser.livebox_count < 0.8:
+        raise ParseError(
+            "ページ構造の変化が疑われます "
+            f"(配信枠={parser.livebox_count}, 解析成功={len(streams)}, 読み飛ばし={skipped})"
+        )
+
+    LOGGER.info(
+        "ランキングを解析しました: 放送中表示=%s, 配信枠=%d, 解析成功=%d",
+        parser.broadcast_count if parser.broadcast_count is not None else "不明",
+        parser.livebox_count,
+        len(streams),
+    )
+    return streams
+
+
+def _normalise_stream(raw: _RawStream) -> Stream:
+    user_id = _extract_mixch_user_id(raw.user_id) or _extract_mixch_user_id(raw.url)
+    if not user_id:
+        raise ParseError("MixChannelユーザーIDがありません")
+
+    url = raw.url or f"https://mixch.tv/u/{user_id}/live"
+    # ページに別形式のリンクが混入しても、通知先は正規の配信URLへ揃える。
+    url = f"https://mixch.tv/u/{user_id}/live"
+
+    # 実ページには、配信者名を空欄にしている利用者がまれにいる。
+    # 枠自体を捨てると高い勢い度を見逃すため、安定したユーザーIDで補う。
+    name = _clean_text(raw.broadcaster_name) or f"名称未設定（ID: {user_id}）"
+
+    momentum = _first_integer(raw.momentum_text, "勢い度", user_id)
+    rank = _optional_first_integer(raw.rank_text)
+    elapsed_minutes = _elapsed_minutes(raw.elapsed_title, raw.elapsed_text)
+    elapsed_text = _normalise_elapsed_text(raw.elapsed_text, elapsed_minutes)
+
+    return Stream(
+        user_id=user_id,
+        broadcaster_name=name,
+        title=_clean_text(raw.title) or "（配信タイトルなし）",
+        url=url,
+        momentum=momentum,
+        rank=rank,
+        elapsed_minutes=elapsed_minutes,
+        elapsed_text=elapsed_text,
+    )
+
+
+def fetch_page(url: str, timeout_seconds: float) -> str:
+    """対象ページを1回だけ取得する。"""
+
+    request = Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (compatible; MixchRankingMonitor/1.0; "
+                "+https://github.com/nekopone/mixch-ranking-monitor)"
+            ),
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "ja-JP,ja;q=0.9",
+            "Cache-Control": "no-cache",
+        },
+    )
+
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:
+            status = getattr(response, "status", 200)
+            if status != 200:
+                raise MonitorError(f"監視ページがHTTP {status}を返しました")
+            body = response.read()
+            charset = response.headers.get_content_charset() or "utf-8"
+    except HTTPError as exc:
+        raise MonitorError(f"監視ページがHTTP {exc.code}を返しました") from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        raise MonitorError(f"監視ページの取得に失敗しました ({type(exc).__name__})") from exc
+
+    try:
+        html = body.decode(charset, errors="strict")
+    except (LookupError, UnicodeDecodeError):
+        html = body.decode("utf-8", errors="replace")
+
+    if len(html) < 1_000:
+        raise MonitorError(f"監視ページの応答が短すぎます ({len(html)}文字)")
+    return html
+
+
+def load_state(path: Path) -> dict[str, Any]:
+    """通知済み時刻を読む。壊れた状態は重複通知防止のため黙って初期化しない。"""
+
+    if not path.exists():
+        return _new_state()
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise StateError("状態ファイルを読み取れません") from exc
+
+    if not isinstance(data, dict):
+        raise StateError("状態ファイルの最上位がオブジェクトではありません")
+    if data.get("version", STATE_VERSION) != STATE_VERSION:
+        raise StateError(f"未対応の状態ファイル版です: {data.get('version')!r}")
+
+    notifications = data.setdefault("notifications", {})
+    metadata = data.setdefault("metadata", {})
+    if not isinstance(notifications, dict) or not isinstance(metadata, dict):
+        raise StateError("状態ファイルのnotificationsまたはmetadataが不正です")
+
+    # 時刻が壊れていた場合に「未通知扱い」で大量再送しないよう、先に全部検証する。
+    for user_id, record in notifications.items():
+        if not isinstance(user_id, str) or not isinstance(record, dict):
+            raise StateError("状態ファイルの通知履歴が不正です")
+        timestamp = record.get("last_notified_at")
+        if not isinstance(timestamp, str):
+            raise StateError(f"通知履歴の時刻がありません (user_id={user_id})")
+        _parse_timestamp(timestamp)
+
+    for key in ("last_heartbeat_at", "last_error_notified_at"):
+        timestamp = metadata.get(key)
+        if timestamp is not None:
+            if not isinstance(timestamp, str):
+                raise StateError(f"metadata.{key}が文字列ではありません")
+            _parse_timestamp(timestamp)
+
+    data["version"] = STATE_VERSION
+    return data
+
+
+def save_state(path: Path, state: dict[str, Any]) -> None:
+    """途中書き込みを避けて状態ファイルを置き換える。"""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    state["version"] = STATE_VERSION
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def select_eligible_streams(
+    streams: Iterable[Stream],
+    state: dict[str, Any],
+    threshold: int,
+    cooldown_hours: float,
+    now: datetime,
+) -> list[Stream]:
+    """しきい値を超え、同じ配信者の抑制時間も過ぎた配信だけを返す。"""
+
+    cutoff = now - timedelta(hours=cooldown_hours)
+    notifications = state["notifications"]
+    eligible: list[Stream] = []
+
+    for stream in streams:
+        # 「150を超えた」は150を含まない。設定150なら151以上。
+        if stream.momentum <= threshold:
+            continue
+        record = notifications.get(stream.user_id)
+        if record:
+            last_notified = _parse_timestamp(record["last_notified_at"])
+            if last_notified > cutoff:
+                continue
+        eligible.append(stream)
+
+    return sorted(eligible, key=lambda item: item.momentum, reverse=True)
+
+
+def mark_notified(
+    state: dict[str, Any], streams: Iterable[Stream], notified_at: datetime
+) -> None:
+    notifications = state["notifications"]
+    timestamp = _format_timestamp(notified_at)
+    for stream in streams:
+        notifications[stream.user_id] = {
+            "last_notified_at": timestamp,
+            "broadcaster_name": stream.broadcaster_name,
+            "url": stream.url,
+        }
+
+
+def maintain_state(
+    state: dict[str, Any], now: datetime, cooldown_hours: float, heartbeat_days: float
+) -> bool:
+    """古い履歴を掃除し、公開リポジトリ停止防止用の週次生存記録を更新する。"""
+
+    changed = False
+    notifications = state["notifications"]
+    retention = max(timedelta(days=30), timedelta(hours=cooldown_hours * 2))
+    cutoff = now - retention
+    expired = [
+        user_id
+        for user_id, record in notifications.items()
+        if _parse_timestamp(record["last_notified_at"]) < cutoff
+    ]
+    for user_id in expired:
+        del notifications[user_id]
+        changed = True
+
+    metadata = state["metadata"]
+    last_heartbeat_text = metadata.get("last_heartbeat_at")
+    heartbeat_due = (
+        last_heartbeat_text is None
+        or _parse_timestamp(last_heartbeat_text)
+        <= now - timedelta(days=heartbeat_days)
+    )
+    if heartbeat_due:
+        metadata["last_heartbeat_at"] = _format_timestamp(now)
+        changed = True
+
+    return changed
+
+
+def build_stream_embed(stream: Stream, threshold: int, observed_at: datetime) -> dict[str, Any]:
+    rank_text = f"{stream.rank}位" if stream.rank is not None else "不明"
+    description = _truncate(stream.title, 700)
+    return {
+        "title": _truncate(f"🔥 {stream.broadcaster_name}", 256),
+        "url": stream.url,
+        "description": description,
+        "color": DISCORD_EMBED_COLOR,
+        "fields": [
+            {
+                "name": "勢い度",
+                "value": f"**{stream.momentum} points**（設定 {threshold} 超）",
+                "inline": True,
+            },
+            {"name": "順位", "value": rank_text, "inline": True},
+            {"name": "配信時間", "value": stream.elapsed_text, "inline": True},
+            {"name": "配信URL", "value": f"[MixChannelで開く]({stream.url})", "inline": False},
+        ],
+        "footer": {"text": "ライブランキングZ / MixChannel勢い監視"},
+        "timestamp": _format_timestamp(observed_at),
+    }
+
+
+def send_stream_notifications(
+    webhook_url: str,
+    streams: Sequence[Stream],
+    threshold: int,
+    observed_at: datetime,
+    timeout_seconds: float,
+) -> list[Stream]:
+    """最大5件ずつDiscordへ送り、送信完了した配信一覧を返す。"""
+
+    _require_webhook(webhook_url)
+    sent: list[Stream] = []
+    for batch in _chunks(streams, MAX_EMBEDS_PER_MESSAGE):
+        payload = {
+            "username": "MixChannel勢い監視",
+            "content": f"勢い度が **{threshold}を超えた** 配信を検知しました。",
+            "allowed_mentions": {"parse": []},
+            "embeds": [
+                build_stream_embed(stream, threshold, observed_at) for stream in batch
+            ],
+        }
+        _post_discord(webhook_url, payload, timeout_seconds)
+        sent.extend(batch)
+    return sent
+
+
+def send_test_notification(webhook_url: str, timeout_seconds: float) -> None:
+    _require_webhook(webhook_url)
+    payload = {
+        "username": "MixChannel勢い監視",
+        "content": "✅ MixChannel勢い監視のテスト通知です。Webhookは正常に動いています。",
+        "allowed_mentions": {"parse": []},
+    }
+    _post_discord(webhook_url, payload, timeout_seconds)
+
+
+def maybe_send_error_notification(
+    webhook_url: str,
+    state: dict[str, Any],
+    error: Exception,
+    now: datetime,
+    cooldown_hours: float,
+    timeout_seconds: float,
+) -> bool:
+    """同種を問わず、監視エラー通知を設定時間に1回までに抑える。"""
+
+    if not webhook_url:
+        return False
+    metadata = state["metadata"]
+    previous = metadata.get("last_error_notified_at")
+    if previous and _parse_timestamp(previous) > now - timedelta(hours=cooldown_hours):
+        LOGGER.warning("エラー通知は抑制時間内のため送りません")
+        return False
+
+    payload = {
+        "username": "MixChannel勢い監視",
+        "content": "⚠️ MixChannel勢い監視でエラーが発生しました。",
+        "allowed_mentions": {"parse": []},
+        "embeds": [
+            {
+                "title": "監視処理を完了できませんでした",
+                "description": _truncate(str(error), 1_000),
+                "color": 0xE74C3C,
+                "footer": {"text": "同じ通知は一定時間抑制されます"},
+                "timestamp": _format_timestamp(now),
+            }
+        ],
+    }
+    _post_discord(webhook_url, payload, timeout_seconds)
+    metadata["last_error_notified_at"] = _format_timestamp(now)
+    return True
+
+
+def run(config: Config) -> int:
+    now = datetime.now(timezone.utc)
+    state: dict[str, Any] | None = None
+
+    try:
+        state = load_state(config.state_file)
+
+        if config.test_webhook:
+            send_test_notification(
+                config.discord_webhook_url, config.request_timeout_seconds
+            )
+            LOGGER.info("Discordへテスト通知を送りました")
+
+        html = fetch_page(config.monitor_url, config.request_timeout_seconds)
+        streams = parse_ranking_page(html)
+        eligible = select_eligible_streams(
+            streams,
+            state,
+            config.momentum_threshold,
+            config.cooldown_hours,
+            now,
+        )
+
+        LOGGER.info(
+            "判定結果: しきい値=%d超, 通知候補=%d件, dry_run=%s",
+            config.momentum_threshold,
+            len(eligible),
+            config.dry_run,
+        )
+        for stream in eligible:
+            LOGGER.info(
+                "通知候補: user_id=%s name=%s momentum=%d elapsed=%s url=%s",
+                stream.user_id,
+                stream.broadcaster_name,
+                stream.momentum,
+                stream.elapsed_text,
+                stream.url,
+            )
+
+        if eligible and not config.dry_run:
+            sent: list[Stream] = []
+            try:
+                for batch in _chunks(eligible, MAX_EMBEDS_PER_MESSAGE):
+                    sent_batch = send_stream_notifications(
+                        config.discord_webhook_url,
+                        batch,
+                        config.momentum_threshold,
+                        now,
+                        config.request_timeout_seconds,
+                    )
+                    sent.extend(sent_batch)
+                    # 後続バッチが失敗しても、送信済み分を状態へ残す。
+                    mark_notified(state, sent_batch, now)
+                    save_state(config.state_file, state)
+            except Exception:
+                if sent:
+                    LOGGER.warning("通知済み%d件の状態を保存してから終了します", len(sent))
+                raise
+            LOGGER.info("Discordへ%d件の配信を通知しました", len(sent))
+        elif not config.dry_run:
+            # 通常運転でWebhookの設定漏れを放置しない。通知候補が出るまで
+            # 未設定に気付けない事故を防ぐため、毎回確認する。
+            _require_webhook(config.discord_webhook_url)
+
+        if not config.dry_run:
+            maintain_state(
+                state, now, config.cooldown_hours, config.heartbeat_days
+            )
+            save_state(config.state_file, state)
+        return 0
+
+    except Exception as exc:  # noqa: BLE001 - 監視を黙って落とさないため最上位で集約
+        LOGGER.exception("監視処理に失敗しました: %s", exc)
+        if state is not None and not config.dry_run and config.notify_on_error:
+            try:
+                if maybe_send_error_notification(
+                    config.discord_webhook_url,
+                    state,
+                    exc,
+                    now,
+                    config.error_cooldown_hours,
+                    config.request_timeout_seconds,
+                ):
+                    save_state(config.state_file, state)
+            except Exception as notify_exc:  # noqa: BLE001
+                LOGGER.error("エラー通知にも失敗しました: %s", notify_exc)
+        if state is not None and not config.dry_run:
+            try:
+                save_state(config.state_file, state)
+            except OSError as state_exc:
+                LOGGER.error("状態ファイルの保存にも失敗しました: %s", state_exc)
+        return 1
+
+
+def _post_discord(
+    webhook_url: str, payload: dict[str, Any], timeout_seconds: float
+) -> None:
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = Request(
+        webhook_url,
+        data=data,
+        method="POST",
+        headers={"Content-Type": "application/json", "User-Agent": "MixchRankingMonitor/1.0"},
+    )
+
+    for attempt in range(1, 4):
+        try:
+            with urlopen(request, timeout=timeout_seconds) as response:
+                status = getattr(response, "status", 204)
+                if 200 <= status < 300:
+                    return
+                raise NotificationError(f"DiscordがHTTP {status}を返しました")
+        except HTTPError as exc:
+            if exc.code == 429 and attempt < 3:
+                retry_after = _discord_retry_after(exc)
+                LOGGER.warning(
+                    "Discordの送信制限を受けました。%.1f秒後に再試行します", retry_after
+                )
+                time.sleep(retry_after)
+                continue
+            raise NotificationError(f"DiscordがHTTP {exc.code}を返しました") from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            raise NotificationError(
+                f"Discordへの接続に失敗しました ({type(exc).__name__})"
+            ) from exc
+
+    raise NotificationError("Discord通知の再試行回数を超えました")
+
+
+def _discord_retry_after(error: HTTPError) -> float:
+    header = error.headers.get("Retry-After") if error.headers else None
+    if header:
+        try:
+            return min(max(float(header), 0.5), 10.0)
+        except ValueError:
+            pass
+    try:
+        raw = error.read().decode("utf-8", errors="replace")
+        value = json.loads(raw).get("retry_after", 1.0)
+        seconds = float(value)
+        # Discordの応答差異に備え、1000を超える値はミリ秒として扱う。
+        if seconds > 1_000:
+            seconds /= 1_000
+        return min(max(seconds, 0.5), 10.0)
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+        return 1.0
+
+
+def _new_state() -> dict[str, Any]:
+    return {"version": STATE_VERSION, "notifications": {}, "metadata": {}}
+
+
+def _elapsed_minutes(title: str, visible_text: str) -> int | None:
+    match = re.search(r"(\d+)\s*分経過", title)
+    if match:
+        return int(match.group(1))
+
+    compact = _clean_text(visible_text).replace(" ", "")
+    hours_match = re.search(r"(\d+)時間", compact)
+    minutes_match = re.search(r"(\d+)分", compact)
+    if hours_match or minutes_match:
+        hours = int(hours_match.group(1)) if hours_match else 0
+        minutes = int(minutes_match.group(1)) if minutes_match else 0
+        return hours * 60 + minutes
+    return None
+
+
+def _normalise_elapsed_text(text: str, minutes: int | None) -> str:
+    compact = re.sub(r"\s+", "", text)
+    if compact:
+        return compact
+    if minutes is None:
+        return "不明"
+    hours, remaining = divmod(minutes, 60)
+    return f"{hours}時間{remaining}分" if hours else f"{remaining}分"
+
+
+def _first_integer(text: str, label: str, user_id: str) -> int:
+    value = _optional_first_integer(text)
+    if value is None:
+        raise ParseError(f"{label}が数値ではありません (user_id={user_id})")
+    return value
+
+
+def _optional_first_integer(text: str) -> int | None:
+    match = re.search(r"\d[\d,]*", text)
+    return int(match.group(0).replace(",", "")) if match else None
+
+
+def _extract_mixch_user_id(value: str) -> str | None:
+    match = re.search(r"(?:mixch_|/u/)(\d+)(?:/live)?", value)
+    if match:
+        return match.group(1)
+    return value if value.isdigit() else None
+
+
+def _clean_text(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _truncate(value: str, limit: int) -> str:
+    return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+def _chunks(items: Sequence[Stream], size: int) -> Iterable[list[Stream]]:
+    for start in range(0, len(items), size):
+        yield list(items[start : start + size])
+
+
+def _parse_timestamp(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise StateError(f"状態ファイルの時刻形式が不正です: {value!r}") from exc
+    if parsed.tzinfo is None:
+        raise StateError(f"状態ファイルの時刻にタイムゾーンがありません: {value!r}")
+    return parsed.astimezone(timezone.utc)
+
+
+def _format_timestamp(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace(
+        "+00:00", "Z"
+    )
+
+
+def _read_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise MonitorError(f"{name}は整数で指定してください") from exc
+    if not minimum <= value <= maximum:
+        raise MonitorError(f"{name}は{minimum}〜{maximum}で指定してください")
+    return value
+
+
+def _read_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise MonitorError(f"{name}は数値で指定してください") from exc
+    if not minimum <= value <= maximum:
+        raise MonitorError(f"{name}は{minimum}〜{maximum}で指定してください")
+    return value
+
+
+def _read_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise MonitorError(f"{name}はtrueまたはfalseで指定してください")
+
+
+def _validate_https_url(value: str, name: str) -> None:
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise MonitorError(f"{name}にはhttps://で始まるURLを指定してください")
+
+
+def _validate_discord_webhook_url(value: str) -> None:
+    parsed = urlparse(value)
+    allowed_hosts = {
+        "discord.com",
+        "www.discord.com",
+        "discordapp.com",
+        "www.discordapp.com",
+        "canary.discord.com",
+        "ptb.discord.com",
+    }
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in allowed_hosts
+        or not parsed.path.startswith("/api/webhooks/")
+    ):
+        raise MonitorError("DISCORD_WEBHOOK_URLがDiscordのWebhook URLではありません")
+
+
+def _require_webhook(value: str) -> None:
+    if not value:
+        raise MonitorError(
+            "DISCORD_WEBHOOK_URLが未設定です。GitHub ActionsのSecretへ登録してください"
+        )
+
+
+def configure_logging() -> None:
+    logging.basicConfig(
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+
+def main() -> int:
+    configure_logging()
+    try:
+        config = Config.from_environment()
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.error("設定の読み込みに失敗しました: %s", exc)
+        return 1
+    return run(config)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
