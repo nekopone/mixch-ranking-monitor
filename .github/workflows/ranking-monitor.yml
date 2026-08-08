@@ -1,9 +1,6 @@
 name: MixChannel勢い監視
 
 on:
-  schedule:
-    # GitHub Actionsが許す最短間隔の5分おき。
-    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -94,4 +91,3 @@ jobs:
 
           git commit -m "chore: update monitor state [skip ci]"
           git push origin HEAD:monitor-state
-
