@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   start-relay:
-    if: ${{ vars.RELAY_ENABLED == 'true' }}
+    if: ${{ vars.RELAY_ENABLED != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
