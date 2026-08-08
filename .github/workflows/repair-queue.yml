@@ -28,5 +28,7 @@ jobs:
           if [ "$status" != "completed" ]; then
             gh run cancel "$STALE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
               || gh api --method POST \
-                "repos/$GITHUB_REPOSITORY/actions/runs/$STALE_RUN_ID/force-cancel"
+                "repos/$GITHUB_REPOSITORY/actions/runs/$STALE_RUN_ID/force-cancel" \
+              || gh api --method DELETE \
+                "repos/$GITHUB_REPOSITORY/actions/runs/$STALE_RUN_ID"
           fi
