@@ -122,6 +122,21 @@ class FetchTests(unittest.TestCase):
         self.assertIn("live_list_header1", html)
         self.assertEqual(1, mocked.call_count)
 
+    @patch("src.mixch_monitor.time.sleep", return_value=None)
+    def test_retries_a_short_fallback_response(self, _sleep: object) -> None:
+        fixture = FIXTURE.read_bytes() + b" " * 2_000
+        responses = [
+            self.FakeResponse(b""),
+            self.FakeResponse(b"temporary fallback error"),
+            self.FakeResponse(fixture),
+        ]
+
+        with patch("src.mixch_monitor.urlopen", side_effect=responses) as mocked:
+            html = fetch_page("https://live-ranking.com/v/mixch", 30)
+
+        self.assertIn("live_list_header1", html)
+        self.assertEqual(3, mocked.call_count)
+
 
 class EligibilityTests(unittest.TestCase):
     def test_threshold_is_strictly_greater_than_150(self) -> None:

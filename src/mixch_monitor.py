@@ -378,17 +378,37 @@ def fetch_page(url: str, timeout_seconds: float) -> str:
         # Markdownではなく元ページに近いHTMLを返してもらい、同じ解析器を使う。
         "X-Respond-With": "html",
     }
-    html = _download_text(
-        fallback_url, fallback_headers, timeout_seconds, "HTML退避経路"
-    )
-    if len(html) < 1_000:
-        # 短い応答はサービス側の利用制限メッセージであることが多い。
-        # 公開ページの取得結果だけを最大200文字出し、原因をログから判別できるようにする。
-        preview = _clean_text(html)[:200]
-        raise MonitorError(
-            f"HTML退避経路の応答が短すぎます ({len(html)}文字, 内容={preview!r})"
-        )
-    return html
+    last_fallback_error: MonitorError | None = None
+    for attempt in range(1, 4):
+        try:
+            html = _download_text(
+                fallback_url, fallback_headers, timeout_seconds, "HTML退避経路"
+            )
+            if len(html) >= 1_000:
+                return html
+
+            # 短い応答はサービス側の一時的な利用制限メッセージであることが多い。
+            # 公開ページの取得結果だけを最大200文字出し、原因を判別できるようにする。
+            preview = _clean_text(html)[:200]
+            last_fallback_error = MonitorError(
+                "HTML退避経路の応答が短すぎます "
+                f"({len(html)}文字, 内容={preview!r})"
+            )
+        except MonitorError as exc:
+            last_fallback_error = exc
+
+        if attempt < 3:
+            wait_seconds = attempt * 3
+            LOGGER.warning(
+                "HTML退避経路の取得に失敗しました（%d/3）: %s。%d秒後に再試行します",
+                attempt,
+                last_fallback_error,
+                wait_seconds,
+            )
+            time.sleep(wait_seconds)
+
+    assert last_fallback_error is not None
+    raise last_fallback_error
 
 
 def _download_text(
