@@ -26,5 +26,7 @@ jobs:
           set -euo pipefail
           status="$(gh run view "$STALE_RUN_ID" --repo "$GITHUB_REPOSITORY" --json status --jq '.status')"
           if [ "$status" != "completed" ]; then
-            gh run cancel "$STALE_RUN_ID" --repo "$GITHUB_REPOSITORY"
+            gh run cancel "$STALE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+              || gh api --method POST \
+                "repos/$GITHUB_REPOSITORY/actions/runs/$STALE_RUN_ID/force-cancel"
           fi
