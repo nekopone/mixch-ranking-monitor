@@ -1,0 +1,30 @@
+name: One-time Actions queue repair
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/repair-queue.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel-stale-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      GH_TOKEN: ${{ github.token }}
+      STALE_RUN_ID: '31234995916'
+
+    steps:
+      - name: Cancel stale queued monitor run
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="$(gh run view "$STALE_RUN_ID" --repo "$GITHUB_REPOSITORY" --json status --jq '.status')"
+          if [ "$status" != "completed" ]; then
+            gh run cancel "$STALE_RUN_ID" --repo "$GITHUB_REPOSITORY"
+          fi
