@@ -25,7 +25,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: mixch-ranking-monitor-state
+  group: mixch-ranking-monitor-state-current
   cancel-in-progress: false
 
 jobs:
