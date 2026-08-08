@@ -2,8 +2,8 @@ name: MixChannel勢い監視
 
 on:
   schedule:
-    # 毎時0分はGitHub Actionsが混みやすいため、3分始まりで5分おきにする。
-    - cron: "3,8,13,18,23,28,33,38,43,48,53,58 * * * *"
+    # GitHub Actionsが許す最短間隔の5分おき。
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:
