@@ -1,0 +1,27 @@
+name: One-time MixChannel relay start
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/kick-relay.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  start-relay:
+    if: ${{ vars.RELAY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Start five-minute relay
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run relay.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main
