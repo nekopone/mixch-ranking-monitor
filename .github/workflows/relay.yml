@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   wait-and-dispatch:
-    if: ${{ vars.RELAY_ENABLED == 'true' }}
+    if: ${{ vars.RELAY_ENABLED != 'false' }}
     environment: five-minute-delay
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -39,7 +39,7 @@ jobs:
           exit 1
 
       - name: 次回リレーを予約
-        if: ${{ always() && vars.RELAY_ENABLED == 'true' }}
+        if: ${{ always() && vars.RELAY_ENABLED != 'false' }}
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
