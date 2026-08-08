@@ -382,7 +382,12 @@ def fetch_page(url: str, timeout_seconds: float) -> str:
         fallback_url, fallback_headers, timeout_seconds, "HTML退避経路"
     )
     if len(html) < 1_000:
-        raise MonitorError(f"HTML退避経路の応答が短すぎます ({len(html)}文字)")
+        # 短い応答はサービス側の利用制限メッセージであることが多い。
+        # 公開ページの取得結果だけを最大200文字出し、原因をログから判別できるようにする。
+        preview = _clean_text(html)[:200]
+        raise MonitorError(
+            f"HTML退避経路の応答が短すぎます ({len(html)}文字, 内容={preview!r})"
+        )
     return html
 
 
