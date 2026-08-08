@@ -1,4 +1,4 @@
-name: One-time Actions queue repair
+name: One-time monitor smoke test
 
 on:
   push:
@@ -12,23 +12,20 @@ permissions:
   contents: read
 
 jobs:
-  cancel-stale-run:
+  dispatch-monitor:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     env:
       GH_TOKEN: ${{ github.token }}
-      STALE_RUN_ID: '31234995916'
 
     steps:
-      - name: Cancel stale queued monitor run
+      - name: Dispatch production monitor
         shell: bash
         run: |
           set -euo pipefail
-          status="$(gh run view "$STALE_RUN_ID" --repo "$GITHUB_REPOSITORY" --json status --jq '.status')"
-          if [ "$status" != "completed" ]; then
-            gh run cancel "$STALE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
-              || gh api --method POST \
-                "repos/$GITHUB_REPOSITORY/actions/runs/$STALE_RUN_ID/force-cancel" \
-              || gh api --method DELETE \
-                "repos/$GITHUB_REPOSITORY/actions/runs/$STALE_RUN_ID"
-          fi
+          gh workflow run monitor.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f dry_run=false \
+            -f test_webhook=false \
+            -f threshold_override=150
