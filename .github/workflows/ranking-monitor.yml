@@ -40,16 +40,43 @@ jobs:
       PYTHONUNBUFFERED: "1"
 
     steps:
+      - name: 日本時間の稼働時間を再確認
+        id: active_hours
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 手動の通知なし確認とWebhook疎通テストは、停止時間中も利用できる。
+          if [[ "$DRY_RUN" == "true" || "$TEST_WEBHOOK" == "true" ]]; then
+            echo "monitor_enabled=true" >> "$GITHUB_OUTPUT"
+            echo "手動確認またはWebhookテストのため、時刻にかかわらず実行します。"
+            exit 0
+          fi
+
+          current_hour_text="$(TZ=Asia/Tokyo date +%H)"
+          current_hour=$((10#$current_hour_text))
+
+          if (( current_hour >= 7 && current_hour < 22 )); then
+            echo "monitor_enabled=true" >> "$GITHUB_OUTPUT"
+            echo "日本時間${current_hour_text}時台のため、監視を実行します。"
+          else
+            echo "monitor_enabled=false" >> "$GITHUB_OUTPUT"
+            echo "日本時間${current_hour_text}時台は停止時間（22:00〜翌07:00）のため、監視を終了します。"
+          fi
+
       - name: ソースを取得
+        if: ${{ steps.active_hours.outputs.monitor_enabled == 'true' }}
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: 状態ファイルの場所を設定
+        if: ${{ steps.active_hours.outputs.monitor_enabled == 'true' }}
         shell: bash
         run: echo "STATE_FILE=$RUNNER_TEMP/mixch-ranking-state.json" >> "$GITHUB_ENV"
 
       - name: 前回の通知状態を読む
+        if: ${{ steps.active_hours.outputs.monitor_enabled == 'true' }}
         shell: bash
         run: |
           if git fetch origin monitor-state --depth=1 >/dev/null 2>&1 \
@@ -61,10 +88,11 @@ jobs:
           fi
 
       - name: ランキングを確認
+        if: ${{ steps.active_hours.outputs.monitor_enabled == 'true' }}
         run: python3 -m src.mixch_monitor
 
       - name: 通知状態を保存
-        if: ${{ always() }}
+        if: ${{ always() && steps.active_hours.outputs.monitor_enabled == 'true' }}
         shell: bash
         run: |
           if [ ! -f "$STATE_FILE" ]; then

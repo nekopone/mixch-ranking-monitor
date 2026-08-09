@@ -19,7 +19,24 @@ jobs:
     timeout-minutes: 2
 
     steps:
+      - name: 日本時間の稼働時間を確認
+        id: active_hours
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_hour_text="$(TZ=Asia/Tokyo date +%H)"
+          current_hour=$((10#$current_hour_text))
+
+          if (( current_hour >= 7 && current_hour < 22 )); then
+            echo "monitor_enabled=true" >> "$GITHUB_OUTPUT"
+            echo "日本時間${current_hour_text}時台のため、監視を起動します。"
+          else
+            echo "monitor_enabled=false" >> "$GITHUB_OUTPUT"
+            echo "日本時間${current_hour_text}時台は停止時間（22:00〜翌07:00）のため、監視を起動しません。"
+          fi
+
       - name: 本番監視を起動
+        if: ${{ steps.active_hours.outputs.monitor_enabled == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
