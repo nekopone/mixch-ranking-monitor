@@ -56,6 +56,8 @@ Webhook URLはパスワード同然です。README、プログラム、Actions�
 
 GitHubの設定画面から、ブロックリストをいつでも変更できます。配信者名は変えられてしまうので使わず、MixChannelのユーザーIDで判定します。
 
+`https://mixch.tv/u/14082684/live` のユーザーID `14082684` は、初期ブロックリストへ登録済みです。以下の設定は、さらに別のIDを追加するときに使います。
+
 1. `Settings` → `Secrets and variables` → `Actions`
 2. `Variables` タブ
 3. `New repository variable`
@@ -77,7 +79,7 @@ https://mixch.tv/u/18856007/live
 | `COOLDOWN_HOURS` | 12 | 同じ配信者を再通知しない時間 |
 | `ERROR_NOTIFY_COOLDOWN_HOURS` | 6 | 監視エラー通知の最短間隔 |
 | `HEARTBEAT_DAYS` | 7 | 定期実行の自動停止を防ぐ生存記録の間隔 |
-| `BLOCKED_USER_IDS` | 空欄 | 通知しないユーザーIDまたは配信URLの一覧 |
+| `BLOCKED_USER_IDS` | 空欄 | 初期登録の`14082684`へ追加するユーザーIDまたは配信URLの一覧 |
 | `FALLBACK_MONITOR_URL` | `https://ikioi-ranking.com/v/mixch` | 主サイトが使えない場合の代替サイト |
 | `RELAY_ENABLED` | 未設定 | `false` にすると5分リレーを停止。それ以外は有効 |
 
