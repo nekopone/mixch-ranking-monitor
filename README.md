@@ -1,6 +1,6 @@
 # MixChannel 勢い監視
 
-[ライブランキングZのMixChannel勢い順](https://live-ranking.com/v/mixch)を5分おきに確認し、勢い度が設定値を超えた配信をDiscordへ通知します。
+[ライブランキングZのMixChannel勢い順](https://live-ranking.com/v/mixch)を5分おきに確認し、勢い度が設定値を超えた配信をDiscordへ通知します。主サイトを取得できない、またはランキングとして正常に解析できない場合は、同系列の[MixChannelリアルタイムランキング](https://ikioi-ranking.com/v/mixch)へ自動で切り替えます。
 
 監視する時間は **日本時間の07:00〜21:59** です。22:00〜翌06:59はランキングページを確認せず、Discord通知も送りません。5分リレーだけは翌07:00に自動復帰するため動き続けます。手動の通知なし確認とWebhookテストは停止時間中も実行できます。
 
@@ -52,12 +52,33 @@ Webhook URLはパスワード同然です。README、プログラム、Actions�
 
 たとえば値が `200` なら、201以上で通知します。未設定なら150です。
 
+## 通知しない配信者をユーザーIDで登録する
+
+GitHubの設定画面から、ブロックリストをいつでも変更できます。配信者名は変えられてしまうので使わず、MixChannelのユーザーIDで判定します。
+
+1. `Settings` → `Secrets and variables` → `Actions`
+2. `Variables` タブ
+3. `New repository variable`
+4. 名前を `BLOCKED_USER_IDS` にする
+5. 値へ通知しないユーザーIDをカンマ区切りで入れる
+
+たとえば配信URLが `https://mixch.tv/u/14082684/live` なら、ユーザーIDは `14082684` です。値には数字だけでなく、この配信URLをそのまま入れても認識します。複数指定はカンマ・空白・改行で区切れます。
+
+```text
+14082684, 18844927
+https://mixch.tv/u/18856007/live
+```
+
+ブロックしたユーザーIDは、勢い度や通知履歴の判定より前に除外されます。設定値に数字でもMixChannel URLでもない文字が混ざっている場合は、黙って無視せず設定エラーとして知らせます。
+
 | 変数名 | 初期値 | 意味 |
 | --- | ---: | --- |
 | `MOMENTUM_THRESHOLD` | 150 | この値を**超えた**配信を通知 |
 | `COOLDOWN_HOURS` | 12 | 同じ配信者を再通知しない時間 |
 | `ERROR_NOTIFY_COOLDOWN_HOURS` | 6 | 監視エラー通知の最短間隔 |
 | `HEARTBEAT_DAYS` | 7 | 定期実行の自動停止を防ぐ生存記録の間隔 |
+| `BLOCKED_USER_IDS` | 空欄 | 通知しないユーザーIDまたは配信URLの一覧 |
+| `FALLBACK_MONITOR_URL` | `https://ikioi-ranking.com/v/mixch` | 主サイトが使えない場合の代替サイト |
 | `RELAY_ENABLED` | 未設定 | `false` にすると5分リレーを停止。それ以外は有効 |
 
 ## 動作の要点
@@ -69,7 +90,7 @@ Webhook URLはパスワード同然です。README、プログラム、Actions�
 - 通知履歴は `monitor-state` ブランチの `state.json` に保存します。Webhook URLは保存しません。
 - 状態ファイルが壊れた場合、未通知扱いにして大量再送せず、処理を失敗させてDiscordへ監視エラーを通知します。
 - 通知がない期間も動作確認できるよう、7日に一度だけ状態を更新します。
-- 元サイトがGitHubの実行機へ空の本文を返した場合だけ、[Jina Reader](https://jina.ai/reader/)へキャッシュ無効・HTML形式を指定して公開ページを取得します。通常は元サイトへ直接アクセスし、退避側の一時エラーは短い間隔で最大3回まで再試行します。
+- まず主サイトへ直接アクセスし、取得失敗・短すぎる応答・解析不能のいずれかなら同系列の代替サイトを直接確認します。両方とも失敗した場合だけ、[Jina Reader](https://jina.ai/reader/)へキャッシュ無効・HTML形式を指定して各サイトを最大2回ずつ再試行します。
 - 外部Pythonパッケージは使いません。毎回のインストール時間と通信量を減らしています。
 
 ## 手動で通知候補だけ確認する
