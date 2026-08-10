@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import AbstractSet, Any, Iterable, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -27,6 +27,7 @@ from urllib.request import Request, urlopen
 LOGGER = logging.getLogger("mixch-ranking-monitor")
 
 DEFAULT_MONITOR_URL = "https://live-ranking.com/v/mixch"
+DEFAULT_FALLBACK_MONITOR_URL = "https://ikioi-ranking.com/v/mixch"
 DEFAULT_THRESHOLD = 150
 DEFAULT_COOLDOWN_HOURS = 12.0
 DEFAULT_ERROR_COOLDOWN_HOURS = 6.0
@@ -74,6 +75,7 @@ class Config:
     """環境変数から読み込む実行設定。"""
 
     monitor_url: str
+    fallback_monitor_url: str
     momentum_threshold: int
     cooldown_hours: float
     error_cooldown_hours: float
@@ -84,11 +86,17 @@ class Config:
     dry_run: bool
     test_webhook: bool
     notify_on_error: bool
+    blocked_user_ids: frozenset[str]
 
     @classmethod
     def from_environment(cls) -> "Config":
         monitor_url = os.getenv("MONITOR_URL", DEFAULT_MONITOR_URL).strip()
         _validate_https_url(monitor_url, "MONITOR_URL")
+
+        fallback_monitor_url = os.getenv(
+            "FALLBACK_MONITOR_URL", DEFAULT_FALLBACK_MONITOR_URL
+        ).strip()
+        _validate_https_url(fallback_monitor_url, "FALLBACK_MONITOR_URL")
 
         webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
         if webhook_url:
@@ -96,6 +104,7 @@ class Config:
 
         return cls(
             monitor_url=monitor_url,
+            fallback_monitor_url=fallback_monitor_url,
             momentum_threshold=_read_int(
                 "MOMENTUM_THRESHOLD", DEFAULT_THRESHOLD, minimum=0, maximum=1_000_000
             ),
@@ -122,6 +131,7 @@ class Config:
             dry_run=_read_bool("DRY_RUN", False),
             test_webhook=_read_bool("TEST_WEBHOOK", False),
             notify_on_error=_read_bool("NOTIFY_ON_ERROR", True),
+            blocked_user_ids=_read_user_id_set("BLOCKED_USER_IDS"),
         )
 
 
@@ -285,6 +295,8 @@ def parse_ranking_page(html: str) -> list[Stream]:
             skipped += 1
             LOGGER.warning("配信枠を1件読み飛ばしました: %s", exc)
 
+    if parser.broadcast_count is None and parser.livebox_count == 0:
+        raise ParseError("ランキングページを識別できる情報がありません")
     if parser.broadcast_count and parser.livebox_count == 0:
         raise ParseError(
             f"放送中は{parser.broadcast_count}件と表示されていますが、配信枠を取得できません"
@@ -338,12 +350,17 @@ def _normalise_stream(raw: _RawStream) -> Stream:
     )
 
 
-def fetch_page(url: str, timeout_seconds: float) -> str:
-    """対象ページを取得する。
+def fetch_ranking(
+    primary_url: str, fallback_url: str, timeout_seconds: float
+) -> list[Stream]:
+    """主サイトと代替サイトを順に試し、正常に解析できたランキングを返す。
 
-    live-ranking.com は一部のGitHubホスト実行機にHTTP 200かつ空本文を
-    返すことがある。まず原典へ直接アクセスし、取得できない場合だけ
-    Jina Readerへキャッシュ無効・HTML形式を指定して退避する。
+    ``live-ranking.com`` は一部のGitHubホスト実行機にHTTP 200かつ空本文を
+    返すことがある。まず主サイト、次に同系列の代替サイトへ直接アクセスする。
+    両方とも失敗した場合だけ、Jina Reader経由で同じ2サイトを再試行する。
+
+    本文の長さだけでなくランキングとして解析できることまで確認するため、
+    ページ構造の変更やエラーページを正常取得と誤認しない。
     """
 
     standard_headers = {
@@ -356,20 +373,25 @@ def fetch_page(url: str, timeout_seconds: float) -> str:
         "Cache-Control": "no-cache",
     }
 
-    direct_error: MonitorError | None = None
-    try:
-        html = _download_text(url, standard_headers, timeout_seconds, "監視ページ")
-        if len(html) >= 1_000:
-            return html
-        direct_error = MonitorError(
-            f"監視ページの直接応答が短すぎます ({len(html)}文字)"
-        )
-    except MonitorError as exc:
-        direct_error = exc
+    sites: list[tuple[str, str]] = [("主サイト", primary_url)]
+    if fallback_url != primary_url:
+        sites.append(("代替サイト", fallback_url))
 
-    LOGGER.warning("直接取得に失敗したためHTML退避経路を使います: %s", direct_error)
+    errors: list[str] = []
+    for label, url in sites:
+        try:
+            html = _download_text(
+                url, standard_headers, timeout_seconds, f"{label}のランキングページ"
+            )
+            streams = _parse_fetched_ranking(html, f"{label}の直接応答")
+            LOGGER.info("%sからランキングを取得しました", label)
+            return streams
+        except MonitorError as exc:
+            errors.append(f"{label}の直接取得: {exc}")
+            LOGGER.warning("%sの直接取得・解析に失敗しました: %s", label, exc)
 
-    fallback_url = f"{READER_FALLBACK_PREFIX}{url}"
+    LOGGER.warning("両サイトの直接取得に失敗したためHTML退避経路を使います")
+
     fallback_headers = {
         "User-Agent": "MixchRankingMonitor/1.0",
         "Accept": "text/plain",
@@ -378,37 +400,59 @@ def fetch_page(url: str, timeout_seconds: float) -> str:
         # Markdownではなく元ページに近いHTMLを返してもらい、同じ解析器を使う。
         "X-Respond-With": "html",
     }
-    last_fallback_error: MonitorError | None = None
-    for attempt in range(1, 4):
-        try:
-            html = _download_text(
-                fallback_url, fallback_headers, timeout_seconds, "HTML退避経路"
-            )
-            if len(html) >= 1_000:
-                return html
+    for label, url in sites:
+        reader_url = f"{READER_FALLBACK_PREFIX}{url}"
+        last_error: MonitorError | None = None
+        # 2サイト×3回ではワークフローの3分上限を超え得るため、各2回にする。
+        # 退避経路は15秒で見切り、代替サイトを試す時間を確保する。
+        for attempt in range(1, 3):
+            try:
+                html = _download_text(
+                    reader_url,
+                    fallback_headers,
+                    min(timeout_seconds, 15.0),
+                    f"{label}のHTML退避経路",
+                )
+                streams = _parse_fetched_ranking(
+                    html, f"{label}のHTML退避経路の応答"
+                )
+                LOGGER.info("%sをHTML退避経路から取得しました", label)
+                return streams
+            except MonitorError as exc:
+                last_error = exc
 
-            # 短い応答はサービス側の一時的な利用制限メッセージであることが多い。
-            # 公開ページの取得結果だけを最大200文字出し、原因を判別できるようにする。
-            preview = _clean_text(html)[:200]
-            last_fallback_error = MonitorError(
-                "HTML退避経路の応答が短すぎます "
-                f"({len(html)}文字, 内容={preview!r})"
-            )
-        except MonitorError as exc:
-            last_fallback_error = exc
+            if attempt < 2:
+                wait_seconds = attempt * 3
+                LOGGER.warning(
+                    "%sのHTML退避経路に失敗しました（%d/2）: %s。%d秒後に再試行します",
+                    label,
+                    attempt,
+                    last_error,
+                    wait_seconds,
+                )
+                time.sleep(wait_seconds)
 
-        if attempt < 3:
-            wait_seconds = attempt * 3
-            LOGGER.warning(
-                "HTML退避経路の取得に失敗しました（%d/3）: %s。%d秒後に再試行します",
-                attempt,
-                last_fallback_error,
-                wait_seconds,
-            )
-            time.sleep(wait_seconds)
+        assert last_error is not None
+        errors.append(f"{label}のHTML退避経路: {last_error}")
 
-    assert last_fallback_error is not None
-    raise last_fallback_error
+    raise MonitorError("全取得経路が失敗しました / " + " / ".join(errors))
+
+
+def _parse_fetched_ranking(html: str, label: str) -> list[Stream]:
+    """短い応答と解析不能なHTMLを、次の取得経路へ切り替えられる異常にする。"""
+
+    if len(html) < 1_000:
+        # 短い応答はサービス側の一時的な利用制限メッセージであることが多い。
+        # 公開ページの取得結果だけを最大200文字出し、原因を判別できるようにする。
+        preview = _clean_text(html)[:200]
+        raise MonitorError(
+            f"{label}が短すぎます ({len(html)}文字, 内容={preview!r})"
+        )
+
+    try:
+        return parse_ranking_page(html)
+    except ParseError as exc:
+        raise MonitorError(f"{label}をランキングとして解析できません ({exc})") from exc
 
 
 def _download_text(
@@ -498,14 +542,17 @@ def select_eligible_streams(
     threshold: int,
     cooldown_hours: float,
     now: datetime,
+    blocked_user_ids: AbstractSet[str] = frozenset(),
 ) -> list[Stream]:
-    """しきい値を超え、同じ配信者の抑制時間も過ぎた配信だけを返す。"""
+    """ブロック対象を除き、しきい値と再通知条件を満たす配信だけを返す。"""
 
     cutoff = now - timedelta(hours=cooldown_hours)
     notifications = state["notifications"]
     eligible: list[Stream] = []
 
     for stream in streams:
+        if stream.user_id in blocked_user_ids:
+            continue
         # 「150を超えた」は150を含まない。設定150なら151以上。
         if stream.momentum <= threshold:
             continue
@@ -672,19 +719,28 @@ def run(config: Config) -> int:
             )
             LOGGER.info("Discordへテスト通知を送りました")
 
-        html = fetch_page(config.monitor_url, config.request_timeout_seconds)
-        streams = parse_ranking_page(html)
+        streams = fetch_ranking(
+            config.monitor_url,
+            config.fallback_monitor_url,
+            config.request_timeout_seconds,
+        )
         eligible = select_eligible_streams(
             streams,
             state,
             config.momentum_threshold,
             config.cooldown_hours,
             now,
+            config.blocked_user_ids,
+        )
+
+        blocked_count = sum(
+            1 for stream in streams if stream.user_id in config.blocked_user_ids
         )
 
         LOGGER.info(
-            "判定結果: しきい値=%d超, 通知候補=%d件, dry_run=%s",
+            "判定結果: しきい値=%d超, ブロック除外=%d件, 通知候補=%d件, dry_run=%s",
             config.momentum_threshold,
+            blocked_count,
             len(eligible),
             config.dry_run,
         )
@@ -921,6 +977,26 @@ def _read_bool(name: str, default: bool) -> bool:
     if raw in {"0", "false", "no", "off"}:
         return False
     raise MonitorError(f"{name}はtrueまたはfalseで指定してください")
+
+
+def _read_user_id_set(name: str) -> frozenset[str]:
+    """カンマ・空白・改行区切りのIDまたはMixChannel URLをID集合へ変換する。"""
+
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return frozenset()
+
+    user_ids: set[str] = set()
+    for token in re.split(r"[\s,;、]+", raw):
+        if not token:
+            continue
+        user_id = _extract_mixch_user_id(token)
+        if not user_id:
+            raise MonitorError(
+                f"{name}に不正な値があります: {token!r}。数字のユーザーIDかMixChannel URLを指定してください"
+            )
+        user_ids.add(user_id)
+    return frozenset(user_ids)
 
 
 def _validate_https_url(value: str, name: str) -> None:
