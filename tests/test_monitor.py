@@ -283,7 +283,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             "https://ikioi-ranking.com/v/mixch", config.fallback_monitor_url
         )
-        self.assertEqual(frozenset(), config.blocked_user_ids)
+        self.assertEqual(frozenset({"14082684"}), config.blocked_user_ids)
 
     def test_repository_variables_override_defaults(self) -> None:
         with patch.dict(
@@ -292,7 +292,7 @@ class ConfigTests(unittest.TestCase):
                 "MOMENTUM_THRESHOLD": "275",
                 "COOLDOWN_HOURS": "8",
                 "BLOCKED_USER_IDS": (
-                    "14082684, https://mixch.tv/u/18844927/live\n18856007"
+                    "https://mixch.tv/u/18844927/live\n18856007"
                 ),
             },
             clear=True,

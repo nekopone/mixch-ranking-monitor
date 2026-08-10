@@ -28,6 +28,7 @@ LOGGER = logging.getLogger("mixch-ranking-monitor")
 
 DEFAULT_MONITOR_URL = "https://live-ranking.com/v/mixch"
 DEFAULT_FALLBACK_MONITOR_URL = "https://ikioi-ranking.com/v/mixch"
+DEFAULT_BLOCKED_USER_IDS = frozenset({"14082684"})
 DEFAULT_THRESHOLD = 150
 DEFAULT_COOLDOWN_HOURS = 12.0
 DEFAULT_ERROR_COOLDOWN_HOURS = 6.0
@@ -131,7 +132,10 @@ class Config:
             dry_run=_read_bool("DRY_RUN", False),
             test_webhook=_read_bool("TEST_WEBHOOK", False),
             notify_on_error=_read_bool("NOTIFY_ON_ERROR", True),
-            blocked_user_ids=_read_user_id_set("BLOCKED_USER_IDS"),
+            # 初期ブロックリストへ、Repository variableで指定したIDを追加する。
+            blocked_user_ids=(
+                DEFAULT_BLOCKED_USER_IDS | _read_user_id_set("BLOCKED_USER_IDS")
+            ),
         )
 
 
