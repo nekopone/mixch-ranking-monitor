@@ -12,10 +12,11 @@ from unittest.mock import patch
 
 from src.mixch_monitor import (
     Config,
+    MonitorError,
     StateError,
     Stream,
     build_stream_embed,
-    fetch_page,
+    fetch_ranking,
     load_state,
     maintain_state,
     mark_notified,
@@ -63,6 +64,11 @@ class ParserTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "配信枠を取得できません"):
             parse_ranking_page(html)
 
+    def test_rejects_unrelated_long_html(self) -> None:
+        html = "<html><body>maintenance</body></html>" + " " * 2_000
+        with self.assertRaisesRegex(Exception, "識別できる情報がありません"):
+            parse_ranking_page(html)
+
     def test_keeps_stream_with_blank_broadcaster_name(self) -> None:
         html = """
         <span id="live_list_header1">勢い順 MixChannel [1人放送中]</span>
@@ -97,45 +103,78 @@ class FetchTests(unittest.TestCase):
         def __exit__(self, *args: object) -> None:
             return None
 
-    def test_uses_fresh_html_fallback_when_direct_response_is_empty(self) -> None:
+    def test_uses_alternative_site_when_primary_response_is_empty(self) -> None:
         fixture = FIXTURE.read_bytes() + b" " * 2_000
         responses = [self.FakeResponse(b""), self.FakeResponse(fixture)]
 
         with patch("src.mixch_monitor.urlopen", side_effect=responses) as mocked:
-            html = fetch_page("https://live-ranking.com/v/mixch", 30)
+            streams = fetch_ranking(
+                "https://live-ranking.com/v/mixch",
+                "https://ikioi-ranking.com/v/mixch",
+                30,
+            )
 
-        self.assertIn("live_list_header1", html)
+        self.assertEqual(["111", "222"], [item.user_id for item in streams])
         self.assertEqual(2, mocked.call_count)
-        fallback_request = mocked.call_args_list[1].args[0]
+        alternative_request = mocked.call_args_list[1].args[0]
         self.assertEqual(
-            "https://r.jina.ai/https://live-ranking.com/v/mixch",
-            fallback_request.full_url,
+            "https://ikioi-ranking.com/v/mixch",
+            alternative_request.full_url,
         )
 
-    def test_does_not_use_fallback_when_direct_response_is_valid(self) -> None:
+    def test_does_not_use_alternative_when_primary_response_is_valid(self) -> None:
         fixture = FIXTURE.read_bytes() + b" " * 2_000
         with patch(
             "src.mixch_monitor.urlopen", return_value=self.FakeResponse(fixture)
         ) as mocked:
-            html = fetch_page("https://live-ranking.com/v/mixch", 30)
+            streams = fetch_ranking(
+                "https://live-ranking.com/v/mixch",
+                "https://ikioi-ranking.com/v/mixch",
+                30,
+            )
 
-        self.assertIn("live_list_header1", html)
+        self.assertEqual(2, len(streams))
         self.assertEqual(1, mocked.call_count)
 
+    def test_uses_alternative_when_primary_html_cannot_be_parsed(self) -> None:
+        invalid = b"<html><body>maintenance</body></html>" + b" " * 2_000
+        fixture = FIXTURE.read_bytes() + b" " * 2_000
+        responses = [self.FakeResponse(invalid), self.FakeResponse(fixture)]
+
+        with patch("src.mixch_monitor.urlopen", side_effect=responses) as mocked:
+            streams = fetch_ranking(
+                "https://live-ranking.com/v/mixch",
+                "https://ikioi-ranking.com/v/mixch",
+                30,
+            )
+
+        self.assertEqual(2, len(streams))
+        self.assertEqual(2, mocked.call_count)
+
     @patch("src.mixch_monitor.time.sleep", return_value=None)
-    def test_retries_a_short_fallback_response(self, _sleep: object) -> None:
+    def test_retries_reader_after_both_direct_sites_fail(self, _sleep: object) -> None:
         fixture = FIXTURE.read_bytes() + b" " * 2_000
         responses = [
+            self.FakeResponse(b""),
             self.FakeResponse(b""),
             self.FakeResponse(b"temporary fallback error"),
             self.FakeResponse(fixture),
         ]
 
         with patch("src.mixch_monitor.urlopen", side_effect=responses) as mocked:
-            html = fetch_page("https://live-ranking.com/v/mixch", 30)
+            streams = fetch_ranking(
+                "https://live-ranking.com/v/mixch",
+                "https://ikioi-ranking.com/v/mixch",
+                30,
+            )
 
-        self.assertIn("live_list_header1", html)
-        self.assertEqual(3, mocked.call_count)
+        self.assertEqual(2, len(streams))
+        self.assertEqual(4, mocked.call_count)
+        reader_request = mocked.call_args_list[2].args[0]
+        self.assertEqual(
+            "https://r.jina.ai/https://live-ranking.com/v/mixch",
+            reader_request.full_url,
+        )
 
 
 class EligibilityTests(unittest.TestCase):
@@ -176,6 +215,17 @@ class EligibilityTests(unittest.TestCase):
             now=NOW,
         )
         self.assertEqual(["111"], [item.user_id for item in eligible])
+
+    def test_blocked_user_id_is_never_eligible(self) -> None:
+        eligible = select_eligible_streams(
+            [stream("14082684", 999), stream("222", 200)],
+            new_state(),
+            threshold=150,
+            cooldown_hours=12,
+            now=NOW,
+            blocked_user_ids={"14082684"},
+        )
+        self.assertEqual(["222"], [item.user_id for item in eligible])
 
 
 class StateTests(unittest.TestCase):
@@ -230,16 +280,37 @@ class ConfigTests(unittest.TestCase):
             config = Config.from_environment()
         self.assertEqual(150, config.momentum_threshold)
         self.assertEqual(12, config.cooldown_hours)
+        self.assertEqual(
+            "https://ikioi-ranking.com/v/mixch", config.fallback_monitor_url
+        )
+        self.assertEqual(frozenset(), config.blocked_user_ids)
 
     def test_repository_variables_override_defaults(self) -> None:
         with patch.dict(
             os.environ,
-            {"MOMENTUM_THRESHOLD": "275", "COOLDOWN_HOURS": "8"},
+            {
+                "MOMENTUM_THRESHOLD": "275",
+                "COOLDOWN_HOURS": "8",
+                "BLOCKED_USER_IDS": (
+                    "14082684, https://mixch.tv/u/18844927/live\n18856007"
+                ),
+            },
             clear=True,
         ):
             config = Config.from_environment()
         self.assertEqual(275, config.momentum_threshold)
         self.assertEqual(8, config.cooldown_hours)
+        self.assertEqual(
+            frozenset({"14082684", "18844927", "18856007"}),
+            config.blocked_user_ids,
+        )
+
+    def test_rejects_invalid_blocklist_value(self) -> None:
+        with patch.dict(
+            os.environ, {"BLOCKED_USER_IDS": "14082684, 配信者名"}, clear=True
+        ):
+            with self.assertRaisesRegex(MonitorError, "BLOCKED_USER_IDSに不正な値"):
+                Config.from_environment()
 
 
 if __name__ == "__main__":
