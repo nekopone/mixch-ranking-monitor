@@ -14,13 +14,14 @@ import os
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import AbstractSet, Any, Iterable, Sequence
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 
@@ -35,10 +36,17 @@ DEFAULT_ERROR_COOLDOWN_HOURS = 6.0
 DEFAULT_HEARTBEAT_DAYS = 7.0
 DEFAULT_TIMEOUT_SECONDS = 30.0
 READER_FALLBACK_PREFIX = "https://r.jina.ai/"
+MIXCH_ARCHIVES_API = "https://mixch.tv/api-web/users/{user_id}/live_archives"
+PUBLIC_ARCHIVE_VISIBILITY = 1
+ARCHIVE_PAGE_SIZE = 100
+ARCHIVE_CHECK_WORKERS = 4
+MAX_ARCHIVE_PAGES = 100
+JST = timezone(timedelta(hours=9))
 
 STATE_VERSION = 1
 DISCORD_EMBED_COLOR = 0xFF4D87
 MAX_EMBEDS_PER_MESSAGE = 5
+DISCORD_DESCRIPTION_LIMIT = 3_800
 
 
 class MonitorError(RuntimeError):
@@ -510,9 +518,16 @@ def load_state(path: Path) -> dict[str, Any]:
         raise StateError(f"未対応の状態ファイル版です: {data.get('version')!r}")
 
     notifications = data.setdefault("notifications", {})
+    night_candidates = data.setdefault("night_candidates", {})
     metadata = data.setdefault("metadata", {})
-    if not isinstance(notifications, dict) or not isinstance(metadata, dict):
-        raise StateError("状態ファイルのnotificationsまたはmetadataが不正です")
+    if (
+        not isinstance(notifications, dict)
+        or not isinstance(night_candidates, dict)
+        or not isinstance(metadata, dict)
+    ):
+        raise StateError(
+            "状態ファイルのnotifications、night_candidatesまたはmetadataが不正です"
+        )
 
     # 時刻が壊れていた場合に「未通知扱い」で大量再送しないよう、先に全部検証する。
     for user_id, record in notifications.items():
@@ -522,6 +537,29 @@ def load_state(path: Path) -> dict[str, Any]:
         if not isinstance(timestamp, str):
             raise StateError(f"通知履歴の時刻がありません (user_id={user_id})")
         _parse_timestamp(timestamp)
+
+    for user_id, record in night_candidates.items():
+        if not isinstance(user_id, str) or not isinstance(record, dict):
+            raise StateError("状態ファイルの夜間候補が不正です")
+        if _extract_mixch_user_id(user_id) != user_id:
+            raise StateError(f"夜間候補のユーザーIDが不正です: {user_id!r}")
+        for key in ("broadcaster_name", "url"):
+            if not isinstance(record.get(key), str):
+                raise StateError(
+                    f"夜間候補の{key}が不正です (user_id={user_id})"
+                )
+        momentum = record.get("max_momentum")
+        if not isinstance(momentum, int) or momentum < 0:
+            raise StateError(
+                f"夜間候補のmax_momentumが不正です (user_id={user_id})"
+            )
+        for key in ("first_seen_at", "last_seen_at"):
+            timestamp = record.get(key)
+            if not isinstance(timestamp, str):
+                raise StateError(
+                    f"夜間候補の{key}が不正です (user_id={user_id})"
+                )
+            _parse_timestamp(timestamp)
 
     for key in ("last_heartbeat_at", "last_error_notified_at"):
         timestamp = metadata.get(key)
@@ -575,6 +613,93 @@ def select_eligible_streams(
         eligible.append(stream)
 
     return sorted(eligible, key=lambda item: item.momentum, reverse=True)
+
+
+def select_night_candidates(
+    streams: Iterable[Stream],
+    state: dict[str, Any],
+    threshold: int,
+    cooldown_hours: float,
+    now: datetime,
+    blocked_user_ids: AbstractSet[str] = frozenset(),
+) -> list[Stream]:
+    """夜間に蓄積する配信を返す。夜間だけ設定値ちょうども対象にする。"""
+
+    cutoff = now - timedelta(hours=cooldown_hours)
+    notifications = state["notifications"]
+    candidates: list[Stream] = []
+
+    for stream in streams:
+        if stream.user_id in blocked_user_ids:
+            continue
+        # 利用者指定は「150以上」なので、昼間の「150超」と異なり150を含む。
+        if stream.momentum < threshold:
+            continue
+        record = notifications.get(stream.user_id)
+        if record:
+            last_processed = _parse_timestamp(record["last_notified_at"])
+            if last_processed > cutoff:
+                continue
+        candidates.append(stream)
+
+    return sorted(candidates, key=lambda item: item.momentum, reverse=True)
+
+
+def accumulate_night_candidates(
+    state: dict[str, Any], streams: Iterable[Stream], observed_at: datetime
+) -> int:
+    """ユーザーIDで重複を潰し、夜間に観測した最大勢い度と最新名を保存する。"""
+
+    records = state["night_candidates"]
+    timestamp = _format_timestamp(observed_at)
+    changed = 0
+
+    for stream in streams:
+        record = records.get(stream.user_id)
+        if record is None:
+            records[stream.user_id] = {
+                "broadcaster_name": stream.broadcaster_name,
+                "url": stream.url,
+                "max_momentum": stream.momentum,
+                "first_seen_at": timestamp,
+                "last_seen_at": timestamp,
+            }
+            changed += 1
+            continue
+
+        new_max = max(record["max_momentum"], stream.momentum)
+        if (
+            record["broadcaster_name"] != stream.broadcaster_name
+            or record["url"] != stream.url
+            or record["max_momentum"] != new_max
+        ):
+            record.update(
+                {
+                    "broadcaster_name": stream.broadcaster_name,
+                    "url": stream.url,
+                    "max_momentum": new_max,
+                    "last_seen_at": timestamp,
+                }
+            )
+            changed += 1
+
+    return changed
+
+
+def mark_night_candidates_processed(
+    state: dict[str, Any], processed_at: datetime
+) -> None:
+    """朝の一括処理直後に通常通知が重ならないよう、全候補を抑制履歴へ残す。"""
+
+    timestamp = _format_timestamp(processed_at)
+    notifications = state["notifications"]
+    for user_id, record in state["night_candidates"].items():
+        notifications[user_id] = {
+            "last_notified_at": timestamp,
+            "broadcaster_name": record["broadcaster_name"],
+            "url": record["url"],
+            "reason": "night_digest_processed",
+        }
 
 
 def mark_notified(
@@ -672,6 +797,173 @@ def send_stream_notifications(
     return sent
 
 
+def has_public_archive(user_id: str, timeout_seconds: float) -> bool:
+    """MixChannel公式APIをページ送りし、全体公開アーカイブが1件でもあるか調べる。"""
+
+    cursor: int | None = None
+    seen_cursors: set[int] = set()
+    headers = {
+        "User-Agent": "MixchRankingMonitor/1.0",
+        "Accept": "application/json",
+    }
+
+    for page_number in range(1, MAX_ARCHIVE_PAGES + 1):
+        params: dict[str, int] = {"limit": ARCHIVE_PAGE_SIZE}
+        if cursor is not None:
+            params["cursor"] = cursor
+        url = f"{MIXCH_ARCHIVES_API.format(user_id=user_id)}?{urlencode(params)}"
+        raw = _download_text(
+            url,
+            headers,
+            min(timeout_seconds, 15.0),
+            f"MixChannelアーカイブ一覧 (user_id={user_id}, page={page_number})",
+        )
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise MonitorError(
+                f"MixChannelアーカイブ一覧がJSONではありません (user_id={user_id})"
+            ) from exc
+
+        archives = data.get("archives") if isinstance(data, dict) else None
+        if not isinstance(archives, list):
+            raise MonitorError(
+                f"MixChannelアーカイブ一覧の形式が不正です (user_id={user_id})"
+            )
+        if any(
+            isinstance(archive, dict)
+            and archive.get("visibility") == PUBLIC_ARCHIVE_VISIBILITY
+            for archive in archives
+        ):
+            return True
+
+        if not data.get("has_next"):
+            return False
+
+        next_cursor = data.get("next_cursor")
+        if not isinstance(next_cursor, int) or next_cursor in seen_cursors:
+            raise MonitorError(
+                f"MixChannelアーカイブ一覧のページ情報が不正です (user_id={user_id})"
+            )
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+
+    raise MonitorError(
+        f"MixChannelアーカイブ一覧が{MAX_ARCHIVE_PAGES}ページを超えました "
+        f"(user_id={user_id})"
+    )
+
+
+def find_public_archive_profiles(
+    candidates: dict[str, dict[str, Any]], timeout_seconds: float
+) -> list[dict[str, str]]:
+    """公開アーカイブがある夜間候補だけを、最大勢い度順に返す。"""
+
+    if not candidates:
+        return []
+
+    results: dict[str, bool] = {}
+    errors: list[str] = []
+    worker_count = min(ARCHIVE_CHECK_WORKERS, len(candidates))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(has_public_archive, user_id, timeout_seconds): user_id
+            for user_id in candidates
+        }
+        for future in as_completed(futures):
+            user_id = futures[future]
+            try:
+                results[user_id] = future.result()
+            except Exception as exc:  # noqa: BLE001 - 全候補を確認後にまとめて再試行する
+                LOGGER.warning(
+                    "公開アーカイブ確認に失敗しました: user_id=%s error=%s",
+                    user_id,
+                    exc,
+                )
+                errors.append(user_id)
+
+    if errors:
+        raise MonitorError(
+            "公開アーカイブを確認できない夜間候補があります: "
+            + ", ".join(sorted(errors))
+        )
+
+    ordered = sorted(
+        candidates.items(),
+        key=lambda item: item[1]["max_momentum"],
+        reverse=True,
+    )
+    return [
+        {
+            "user_id": user_id,
+            "broadcaster_name": record["broadcaster_name"],
+            "profile_url": f"https://mixch.tv/u/{user_id}",
+        }
+        for user_id, record in ordered
+        if results.get(user_id)
+    ]
+
+
+def build_night_digest_descriptions(
+    profiles: Sequence[dict[str, str]],
+) -> list[str]:
+    """名前だけをプロフィールリンクにし、Discordの文字数内へ分割する。"""
+
+    descriptions: list[str] = []
+    current_lines: list[str] = []
+    current_length = 0
+
+    for profile in profiles:
+        line = f"[{profile['broadcaster_name']}]({profile['profile_url']})"
+        added_length = len(line) + (1 if current_lines else 0)
+        if current_lines and current_length + added_length > DISCORD_DESCRIPTION_LIMIT:
+            descriptions.append("\n".join(current_lines))
+            current_lines = [line]
+            current_length = len(line)
+        else:
+            current_lines.append(line)
+            current_length += added_length
+
+    if current_lines:
+        descriptions.append("\n".join(current_lines))
+    return descriptions
+
+
+def send_night_digest_notification(
+    webhook_url: str,
+    profiles: Sequence[dict[str, str]],
+    observed_at: datetime,
+    timeout_seconds: float,
+) -> None:
+    """夜間候補のうち公開アーカイブがある人を朝にまとめて通知する。"""
+
+    if not profiles:
+        return
+    _require_webhook(webhook_url)
+    descriptions = build_night_digest_descriptions(profiles)
+    total = len(descriptions)
+    for index, description in enumerate(descriptions, start=1):
+        title = "🌙 夜間高勢い・公開アーカイブあり"
+        if total > 1:
+            title += f"（{index}/{total}）"
+        payload = {
+            "username": "MixChannel勢い監視",
+            "content": "夜間に勢い度が設定値以上になった配信者をまとめました。",
+            "allowed_mentions": {"parse": []},
+            "embeds": [
+                {
+                    "title": title,
+                    "description": description,
+                    "color": DISCORD_EMBED_COLOR,
+                    "footer": {"text": "名前を押すとMixChannelプロフィールを開きます"},
+                    "timestamp": _format_timestamp(observed_at),
+                }
+            ],
+        }
+        _post_discord(webhook_url, payload, timeout_seconds)
+
+
 def send_test_notification(webhook_url: str, timeout_seconds: float) -> None:
     _require_webhook(webhook_url)
     payload = {
@@ -719,8 +1011,9 @@ def maybe_send_error_notification(
     return True
 
 
-def run(config: Config) -> int:
-    now = datetime.now(timezone.utc)
+def run(config: Config, now: datetime | None = None) -> int:
+    # ``now`` は夜間・朝の境界を副作用なしで試験するため注入可能にする。
+    now = now or datetime.now(timezone.utc)
     state: dict[str, Any] | None = None
 
     try:
@@ -737,17 +1030,82 @@ def run(config: Config) -> int:
             config.fallback_monitor_url,
             config.request_timeout_seconds,
         )
+
+        blocked_count = sum(
+            1 for stream in streams if stream.user_id in config.blocked_user_ids
+        )
+
+        if _is_night_time(now):
+            night_candidates = select_night_candidates(
+                streams,
+                state,
+                config.momentum_threshold,
+                config.cooldown_hours,
+                now,
+                config.blocked_user_ids,
+            )
+            LOGGER.info(
+                "夜間判定: しきい値=%d以上, ブロック除外=%d件, 蓄積候補=%d件, dry_run=%s",
+                config.momentum_threshold,
+                blocked_count,
+                len(night_candidates),
+                config.dry_run,
+            )
+            for stream in night_candidates:
+                LOGGER.info(
+                    "夜間蓄積候補: user_id=%s name=%s momentum=%d",
+                    stream.user_id,
+                    stream.broadcaster_name,
+                    stream.momentum,
+                )
+
+            if not config.dry_run:
+                _require_webhook(config.discord_webhook_url)
+                accumulate_night_candidates(state, night_candidates, now)
+                maintain_state(
+                    state, now, config.cooldown_hours, config.heartbeat_days
+                )
+                save_state(config.state_file, state)
+            return 0
+
+        overnight_user_ids = set(state["night_candidates"])
+        if overnight_user_ids:
+            LOGGER.info(
+                "夜間候補%d件の公開アーカイブを朝の一括確認へ回します",
+                len(overnight_user_ids),
+            )
+            public_profiles = find_public_archive_profiles(
+                state["night_candidates"], config.request_timeout_seconds
+            )
+            LOGGER.info(
+                "夜間候補の公開アーカイブ確認結果: 対象=%d件, 公開あり=%d件",
+                len(overnight_user_ids),
+                len(public_profiles),
+            )
+            if not config.dry_run:
+                _require_webhook(config.discord_webhook_url)
+                send_night_digest_notification(
+                    config.discord_webhook_url,
+                    public_profiles,
+                    now,
+                    config.request_timeout_seconds,
+                )
+                mark_night_candidates_processed(state, now)
+                state["night_candidates"].clear()
+                # ランキング取得や昼間通知が後で失敗しても、朝の一括通知を重複させない。
+                save_state(config.state_file, state)
+
         eligible = select_eligible_streams(
-            streams,
+            (
+                stream
+                for stream in streams
+                if stream.user_id not in overnight_user_ids
+            ),
             state,
             config.momentum_threshold,
             config.cooldown_hours,
             now,
             config.blocked_user_ids,
-        )
-
-        blocked_count = sum(
-            1 for stream in streams if stream.user_id in config.blocked_user_ids
         )
 
         LOGGER.info(
@@ -877,7 +1235,19 @@ def _discord_retry_after(error: HTTPError) -> float:
 
 
 def _new_state() -> dict[str, Any]:
-    return {"version": STATE_VERSION, "notifications": {}, "metadata": {}}
+    return {
+        "version": STATE_VERSION,
+        "notifications": {},
+        "night_candidates": {},
+        "metadata": {},
+    }
+
+
+def _is_night_time(value: datetime) -> bool:
+    """日本時間22:00〜翌06:59を夜間として扱う。"""
+
+    hour = value.astimezone(JST).hour
+    return hour >= 22 or hour < 7
 
 
 def _elapsed_minutes(title: str, visible_text: str) -> int | None:
