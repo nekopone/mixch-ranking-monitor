@@ -215,8 +215,15 @@ class _RankingParser(HTMLParser):
                     self._begin_capture(field_name, tag)
                     break
 
-            if tag == "a" and "live_timenum" in classes:
-                self._current.elapsed_title = attr.get("title", "")
+            # 主サイトでは ``a.live_timenum``、代替サイトでは
+            # ``div.live_timenum`` が使われる。タグ名を限定すると、代替サイトへ
+            # 切り替わった回だけ配信時間がすべて「不明」になるため、クラス名で拾う。
+            if "live_timenum" in classes:
+                self._current.elapsed_title = (
+                    attr.get("title", "")
+                    or attr.get("aria-label", "")
+                    or attr.get("data-title", "")
+                )
                 self._begin_capture("elapsed_text", tag)
 
         href = attr.get("href", "")
@@ -615,12 +622,15 @@ def maintain_state(
     return changed
 
 
-def build_stream_embed(stream: Stream, threshold: int, observed_at: datetime) -> dict[str, Any]:
-    rank_text = f"{stream.rank}位" if stream.rank is not None else "不明"
+def build_stream_embed(
+    stream: Stream, threshold: int, observed_at: datetime
+) -> dict[str, Any]:
     description = _truncate(stream.title, 700)
+    profile_url = f"https://mixch.tv/u/{stream.user_id}"
     return {
         "title": _truncate(f"🔥 {stream.broadcaster_name}", 256),
-        "url": stream.url,
+        # 通知上部の配信者名はプロフィールへ、下部の明示リンクはライブへ分ける。
+        "url": profile_url,
         "description": description,
         "color": DISCORD_EMBED_COLOR,
         "fields": [
@@ -629,7 +639,6 @@ def build_stream_embed(stream: Stream, threshold: int, observed_at: datetime) ->
                 "value": f"**{stream.momentum} points**（設定 {threshold} 超）",
                 "inline": True,
             },
-            {"name": "順位", "value": rank_text, "inline": True},
             {"name": "配信時間", "value": stream.elapsed_text, "inline": True},
             {"name": "配信URL", "value": f"[MixChannelで開く]({stream.url})", "inline": False},
         ],
@@ -872,28 +881,30 @@ def _new_state() -> dict[str, Any]:
 
 
 def _elapsed_minutes(title: str, visible_text: str) -> int | None:
-    match = re.search(r"(\d+)\s*分経過", title)
-    if match:
-        return int(match.group(1))
+    # 主サイトのtitleは「62分経過」、代替サイトは「62分」。表示文字列は
+    # どちらも「1時間2分」のようになる。属性と表示の両方を順に試す。
+    for value in (title, visible_text):
+        compact = _clean_text(value).replace(" ", "")
+        total_minutes_match = re.fullmatch(r"(\d+)分(?:経過)?", compact)
+        if total_minutes_match:
+            return int(total_minutes_match.group(1))
 
-    compact = _clean_text(visible_text).replace(" ", "")
-    hours_match = re.search(r"(\d+)時間", compact)
-    minutes_match = re.search(r"(\d+)分", compact)
-    if hours_match or minutes_match:
-        hours = int(hours_match.group(1)) if hours_match else 0
-        minutes = int(minutes_match.group(1)) if minutes_match else 0
-        return hours * 60 + minutes
+        hours_match = re.search(r"(\d+)時間", compact)
+        minutes_match = re.search(r"(\d+)分", compact)
+        if hours_match or minutes_match:
+            hours = int(hours_match.group(1)) if hours_match else 0
+            minutes = int(minutes_match.group(1)) if minutes_match else 0
+            return hours * 60 + minutes
     return None
 
 
 def _normalise_elapsed_text(text: str, minutes: int | None) -> str:
+    if minutes is not None:
+        hours, remaining = divmod(minutes, 60)
+        return f"{hours}時間{remaining}分" if hours else f"{remaining}分"
+
     compact = re.sub(r"\s+", "", text)
-    if compact:
-        return compact
-    if minutes is None:
-        return "不明"
-    hours, remaining = divmod(minutes, 60)
-    return f"{hours}時間{remaining}分" if hours else f"{remaining}分"
+    return compact or "不明"
 
 
 def _first_integer(text: str, label: str, user_id: str) -> int:

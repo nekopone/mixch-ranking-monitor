@@ -85,6 +85,28 @@ class ParserTests(unittest.TestCase):
         self.assertEqual("名称未設定（ID: 9738940）", parsed[0].broadcaster_name)
         self.assertEqual(74, parsed[0].elapsed_minutes)
 
+    def test_parses_elapsed_time_from_fallback_site_div(self) -> None:
+        html = """
+        <span id="live_list_header1">勢い順 MixChannel [1人放送中]</span>
+        <div id="livebox" data-uid="mixch_111">
+          <div class="live_rankNum">1</div>
+          <div class="live_title"><a href="https://mixch.tv/u/111/live">配信</a></div>
+          <div class="live_name"><a href="https://mixch.tv/u/111/live">配信者A</a></div>
+          <div class="live_timenum time_separate_notation" title="214分">
+            <a href="https://mixch.tv/u/111/live">
+              <span class="time_hour_num">3</span><span>時間</span>
+              <span class="time_minutes_num">34</span><span>分</span>
+            </a>
+          </div>
+          <div class="live_viewer"><span>180</span><span>ポイント</span></div>
+        </div>
+        """
+
+        parsed = parse_ranking_page(html)
+
+        self.assertEqual(214, parsed[0].elapsed_minutes)
+        self.assertEqual("3時間34分", parsed[0].elapsed_text)
+
 
 class FetchTests(unittest.TestCase):
     class FakeResponse:
@@ -272,6 +294,15 @@ class NotificationFormattingTests(unittest.TestCase):
         self.assertIn("234 points", rendered)
         self.assertIn("1時間15分", rendered)
         self.assertIn("https://mixch.tv/u/111/live", rendered)
+        self.assertEqual("https://mixch.tv/u/111", embed["url"])
+        self.assertNotIn("順位", [field["name"] for field in embed["fields"]])
+        live_url_field = next(
+            field for field in embed["fields"] if field["name"] == "配信URL"
+        )
+        self.assertEqual(
+            "[MixChannelで開く](https://mixch.tv/u/111/live)",
+            live_url_field["value"],
+        )
 
 
 class ConfigTests(unittest.TestCase):
