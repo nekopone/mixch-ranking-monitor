@@ -15,13 +15,21 @@ from src.mixch_monitor import (
     MonitorError,
     StateError,
     Stream,
+    _is_night_time,
+    accumulate_night_candidates,
+    build_night_digest_descriptions,
     build_stream_embed,
     fetch_ranking,
+    find_public_archive_profiles,
+    has_public_archive,
     load_state,
     maintain_state,
+    mark_night_candidates_processed,
     mark_notified,
     parse_ranking_page,
+    run,
     select_eligible_streams,
+    select_night_candidates,
 )
 
 
@@ -30,7 +38,12 @@ NOW = datetime(2026, 8, 8, 1, 30, tzinfo=timezone.utc)
 
 
 def new_state() -> dict:
-    return {"version": 1, "notifications": {}, "metadata": {}}
+    return {
+        "version": 1,
+        "notifications": {},
+        "night_candidates": {},
+        "metadata": {},
+    }
 
 
 def stream(user_id: str, momentum: int, name: str = "配信者") -> Stream:
@@ -43,6 +56,24 @@ def stream(user_id: str, momentum: int, name: str = "配信者") -> Stream:
         rank=1,
         elapsed_minutes=75,
         elapsed_text="1時間15分",
+    )
+
+
+def config_for_state(path: Path) -> Config:
+    return Config(
+        monitor_url="https://live-ranking.com/v/mixch",
+        fallback_monitor_url="https://ikioi-ranking.com/v/mixch",
+        momentum_threshold=150,
+        cooldown_hours=12,
+        error_cooldown_hours=6,
+        heartbeat_days=7,
+        request_timeout_seconds=30,
+        state_file=path,
+        discord_webhook_url="https://discord.com/api/webhooks/1/test",
+        dry_run=False,
+        test_webhook=False,
+        notify_on_error=False,
+        blocked_user_ids=frozenset(),
     )
 
 
@@ -250,7 +281,244 @@ class EligibilityTests(unittest.TestCase):
         self.assertEqual(["222"], [item.user_id for item in eligible])
 
 
+class NightModeTests(unittest.TestCase):
+    def test_night_time_boundaries_use_japan_time(self) -> None:
+        self.assertFalse(_is_night_time(datetime(2026, 8, 8, 12, 59, tzinfo=timezone.utc)))
+        self.assertTrue(_is_night_time(datetime(2026, 8, 8, 13, 0, tzinfo=timezone.utc)))
+        self.assertTrue(_is_night_time(datetime(2026, 8, 8, 21, 59, tzinfo=timezone.utc)))
+        self.assertFalse(_is_night_time(datetime(2026, 8, 8, 22, 0, tzinfo=timezone.utc)))
+
+    def test_night_threshold_includes_exactly_150(self) -> None:
+        candidates = select_night_candidates(
+            [stream("149", 149), stream("150", 150), stream("151", 151)],
+            new_state(),
+            threshold=150,
+            cooldown_hours=12,
+            now=NOW,
+        )
+        self.assertEqual(["151", "150"], [item.user_id for item in candidates])
+
+    def test_night_candidates_respect_blocklist_and_cooldown(self) -> None:
+        state = new_state()
+        mark_notified(state, [stream("recent", 200)], NOW - timedelta(hours=2))
+        candidates = select_night_candidates(
+            [stream("recent", 300), stream("blocked", 300), stream("ok", 200)],
+            state,
+            threshold=150,
+            cooldown_hours=12,
+            now=NOW,
+            blocked_user_ids={"blocked"},
+        )
+        self.assertEqual(["ok"], [item.user_id for item in candidates])
+
+    def test_accumulation_deduplicates_and_keeps_maximum_momentum(self) -> None:
+        state = new_state()
+        first = NOW - timedelta(minutes=5)
+        accumulate_night_candidates(state, [stream("111", 180, "旧名")], first)
+        accumulate_night_candidates(state, [stream("111", 160, "新名")], NOW)
+
+        self.assertEqual(1, len(state["night_candidates"]))
+        record = state["night_candidates"]["111"]
+        self.assertEqual("新名", record["broadcaster_name"])
+        self.assertEqual(180, record["max_momentum"])
+        self.assertEqual("2026-08-08T01:25:00Z", record["first_seen_at"])
+        self.assertEqual("2026-08-08T01:30:00Z", record["last_seen_at"])
+
+    def test_unchanged_candidate_does_not_rewrite_state(self) -> None:
+        state = new_state()
+        first = NOW - timedelta(minutes=5)
+        accumulate_night_candidates(state, [stream("111", 180, "配信者A")], first)
+
+        changed = accumulate_night_candidates(
+            state, [stream("111", 180, "配信者A")], NOW
+        )
+
+        self.assertEqual(0, changed)
+        self.assertEqual(
+            "2026-08-08T01:25:00Z",
+            state["night_candidates"]["111"]["last_seen_at"],
+        )
+
+    def test_processed_night_candidates_enter_regular_cooldown(self) -> None:
+        state = new_state()
+        accumulate_night_candidates(state, [stream("111", 180, "配信者A")], NOW)
+        mark_night_candidates_processed(state, NOW)
+
+        self.assertEqual(
+            "night_digest_processed", state["notifications"]["111"]["reason"]
+        )
+        self.assertEqual(
+            [],
+            select_eligible_streams(
+                [stream("111", 300)],
+                state,
+                threshold=150,
+                cooldown_hours=12,
+                now=NOW + timedelta(minutes=5),
+            ),
+        )
+
+    def test_night_run_accumulates_without_immediate_notification(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            with (
+                patch(
+                    "src.mixch_monitor.fetch_ranking",
+                    return_value=[stream("111", 150, "配信者A")],
+                ),
+                patch("src.mixch_monitor.send_stream_notifications") as immediate,
+            ):
+                result = run(
+                    config_for_state(path),
+                    now=datetime(2026, 8, 8, 13, 0, tzinfo=timezone.utc),
+                )
+            state = load_state(path)
+
+        self.assertEqual(0, result)
+        immediate.assert_not_called()
+        self.assertIn("111", state["night_candidates"])
+
+    def test_morning_run_sends_digest_once_and_clears_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            state = new_state()
+            accumulate_night_candidates(
+                state, [stream("111", 180, "配信者A")], NOW
+            )
+            path.write_text(json.dumps(state), encoding="utf-8")
+            profiles = [
+                {
+                    "user_id": "111",
+                    "broadcaster_name": "配信者A",
+                    "profile_url": "https://mixch.tv/u/111",
+                }
+            ]
+            with (
+                patch(
+                    "src.mixch_monitor.fetch_ranking",
+                    return_value=[stream("111", 300, "配信者A")],
+                ),
+                patch(
+                    "src.mixch_monitor.find_public_archive_profiles",
+                    return_value=profiles,
+                ),
+                patch("src.mixch_monitor.send_night_digest_notification") as digest,
+                patch("src.mixch_monitor.send_stream_notifications") as immediate,
+            ):
+                result = run(
+                    config_for_state(path),
+                    now=datetime(2026, 8, 8, 22, 0, tzinfo=timezone.utc),
+                )
+            saved = load_state(path)
+
+        self.assertEqual(0, result)
+        digest.assert_called_once()
+        immediate.assert_not_called()
+        self.assertEqual({}, saved["night_candidates"])
+        self.assertEqual(
+            "night_digest_processed", saved["notifications"]["111"]["reason"]
+        )
+
+
+class ArchiveTests(unittest.TestCase):
+    class FakeResponse:
+        def __init__(self, payload: dict) -> None:
+            self._body = BytesIO(json.dumps(payload).encode("utf-8"))
+            self.status = 200
+            self.headers = Message()
+            self.headers["Content-Type"] = "application/json; charset=utf-8"
+
+        def read(self) -> bytes:
+            return self._body.read()
+
+        def __enter__(self) -> "ArchiveTests.FakeResponse":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    def test_public_archive_is_found_on_later_page(self) -> None:
+        responses = [
+            self.FakeResponse(
+                {
+                    "archives": [{"visibility": 3}],
+                    "has_next": True,
+                    "next_cursor": 123,
+                }
+            ),
+            self.FakeResponse(
+                {"archives": [{"visibility": 1}], "has_next": False}
+            ),
+        ]
+        with patch("src.mixch_monitor.urlopen", side_effect=responses) as mocked:
+            self.assertTrue(has_public_archive("111", 30))
+
+        self.assertEqual(2, mocked.call_count)
+        self.assertIn("cursor=123", mocked.call_args_list[1].args[0].full_url)
+
+    def test_restricted_archives_only_are_not_public(self) -> None:
+        response = self.FakeResponse(
+            {"archives": [{"visibility": 2}, {"visibility": 3}], "has_next": False}
+        )
+        with patch("src.mixch_monitor.urlopen", return_value=response):
+            self.assertFalse(has_public_archive("111", 30))
+
+    def test_public_profiles_keep_momentum_order(self) -> None:
+        candidates = {
+            "111": {
+                "broadcaster_name": "配信者A",
+                "url": "https://mixch.tv/u/111/live",
+                "max_momentum": 180,
+            },
+            "222": {
+                "broadcaster_name": "配信者B",
+                "url": "https://mixch.tv/u/222/live",
+                "max_momentum": 250,
+            },
+        }
+        with patch(
+            "src.mixch_monitor.has_public_archive",
+            side_effect=lambda user_id, _timeout: user_id == "111",
+        ):
+            profiles = find_public_archive_profiles(candidates, 30)
+
+        self.assertEqual(
+            [
+                {
+                    "user_id": "111",
+                    "broadcaster_name": "配信者A",
+                    "profile_url": "https://mixch.tv/u/111",
+                }
+            ],
+            profiles,
+        )
+
+    def test_digest_contains_only_clickable_profile_names(self) -> None:
+        descriptions = build_night_digest_descriptions(
+            [
+                {
+                    "user_id": "111",
+                    "broadcaster_name": "配信者A",
+                    "profile_url": "https://mixch.tv/u/111",
+                }
+            ]
+        )
+        self.assertEqual(
+            ["[配信者A](https://mixch.tv/u/111)"], descriptions
+        )
+
+
 class StateTests(unittest.TestCase):
+    def test_old_state_gains_empty_night_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            path.write_text(
+                json.dumps({"version": 1, "notifications": {}, "metadata": {}}),
+                encoding="utf-8",
+            )
+            state = load_state(path)
+        self.assertEqual({}, state["night_candidates"])
+
     def test_rejects_corrupted_timestamp_instead_of_resending(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.json"
