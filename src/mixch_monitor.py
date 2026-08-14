@@ -47,6 +47,7 @@ STATE_VERSION = 1
 DISCORD_EMBED_COLOR = 0xFF4D87
 MAX_EMBEDS_PER_MESSAGE = 5
 DISCORD_DESCRIPTION_LIMIT = 3_800
+RANKING_LOG_LIMIT = 10
 
 
 class MonitorError(RuntimeError):
@@ -367,6 +368,58 @@ def _normalise_stream(raw: _RawStream) -> Stream:
         elapsed_minutes=elapsed_minutes,
         elapsed_text=elapsed_text,
     )
+
+
+def log_top_ranking_snapshot(
+    streams: Sequence[Stream], observed_at: datetime, limit: int = RANKING_LOG_LIMIT
+) -> None:
+    """ランキング上位だけを、後から機械集計できる1行JSONで実行ログへ残す。
+
+    通知対象の選別より前に呼ぶため、盛り上がり度のしきい値、再通知抑制、
+    ブロックリストに関係なく、その時点のランキングそのものを記録できる。
+    順位を取得できない配信は、ページに現れた順番を保ったまま末尾へ回す。
+    """
+
+    if limit <= 0:
+        LOGGER.info(
+            "ランキング上位ログ: 観測時刻=%s, 記録件数=0",
+            _format_timestamp(observed_at),
+        )
+        return
+
+    # Pythonのsortは同順位で元の順序を保つ。順位不明を最後へ回しつつ、
+    # 代替サイト側で順位が欠けてもページ上位から最大limit件を記録する。
+    ordered = sorted(
+        streams,
+        key=lambda stream: (
+            stream.rank is None,
+            stream.rank if stream.rank is not None else 0,
+        ),
+    )[:limit]
+    observed_at_text = _format_timestamp(observed_at)
+    LOGGER.info(
+        "ランキング上位ログ: 観測時刻=%s, 記録件数=%d",
+        observed_at_text,
+        len(ordered),
+    )
+
+    for stream in ordered:
+        record = {
+            "observed_at": observed_at_text,
+            "rank": stream.rank,
+            "user_id": stream.user_id,
+            "broadcaster_name": stream.broadcaster_name,
+            "title": stream.title,
+            "momentum": stream.momentum,
+            "elapsed_minutes": stream.elapsed_minutes,
+            "elapsed_text": stream.elapsed_text,
+            "profile_url": f"https://mixch.tv/u/{stream.user_id}",
+            "live_url": stream.url,
+        }
+        LOGGER.info(
+            "RANKING_TOP10 %s",
+            json.dumps(record, ensure_ascii=False, sort_keys=True),
+        )
 
 
 def fetch_ranking(
@@ -1030,6 +1083,8 @@ def run(config: Config, now: datetime | None = None) -> int:
             config.fallback_monitor_url,
             config.request_timeout_seconds,
         )
+        # 後から初速と伸び方を比較できるよう、通知判定とは独立して毎回記録する。
+        log_top_ranking_snapshot(streams, now)
 
         blocked_count = sum(
             1 for stream in streams if stream.user_id in config.blocked_user_ids
