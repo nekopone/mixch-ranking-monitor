@@ -23,6 +23,7 @@ from src.mixch_monitor import (
     find_public_archive_profiles,
     has_public_archive,
     load_state,
+    log_top_ranking_snapshot,
     maintain_state,
     mark_night_candidates_processed,
     mark_notified,
@@ -46,16 +47,28 @@ def new_state() -> dict:
     }
 
 
-def stream(user_id: str, momentum: int, name: str = "配信者") -> Stream:
+def stream(
+    user_id: str,
+    momentum: int,
+    name: str = "配信者",
+    rank: int | None = 1,
+    elapsed_minutes: int | None = 75,
+) -> Stream:
     return Stream(
         user_id=user_id,
         broadcaster_name=name,
         title="配信タイトル",
         url=f"https://mixch.tv/u/{user_id}/live",
         momentum=momentum,
-        rank=1,
-        elapsed_minutes=75,
-        elapsed_text="1時間15分",
+        rank=rank,
+        elapsed_minutes=elapsed_minutes,
+        elapsed_text=(
+            "不明"
+            if elapsed_minutes is None
+            else "1時間15分"
+            if elapsed_minutes == 75
+            else f"{elapsed_minutes}分"
+        ),
     )
 
 
@@ -281,6 +294,46 @@ class EligibilityTests(unittest.TestCase):
         self.assertEqual(["222"], [item.user_id for item in eligible])
 
 
+class RankingSnapshotLogTests(unittest.TestCase):
+    def test_logs_only_top_ten_in_rank_order_as_json(self) -> None:
+        # 入力順を意図的に崩し、順位11・12位と順位不明が記録されないことも確認する。
+        streams = [
+            stream(str(rank), 300 - rank, f"配信者{rank}", rank=rank)
+            for rank in range(12, 0, -1)
+        ]
+        streams.append(stream("unknown", 999, "順位不明", rank=None))
+
+        with self.assertLogs("mixch-ranking-monitor", level="INFO") as captured:
+            log_top_ranking_snapshot(streams, NOW)
+
+        data_lines = [
+            line.split("RANKING_TOP10 ", 1)[1]
+            for line in captured.output
+            if "RANKING_TOP10 " in line
+        ]
+        records = [json.loads(line) for line in data_lines]
+
+        self.assertEqual(10, len(records))
+        self.assertEqual(list(range(1, 11)), [item["rank"] for item in records])
+        self.assertEqual("2026-08-08T01:30:00Z", records[0]["observed_at"])
+        self.assertEqual("1", records[0]["user_id"])
+        self.assertEqual("配信者1", records[0]["broadcaster_name"])
+        self.assertEqual(299, records[0]["momentum"])
+        self.assertEqual(75, records[0]["elapsed_minutes"])
+        self.assertEqual("https://mixch.tv/u/1", records[0]["profile_url"])
+        self.assertEqual("https://mixch.tv/u/1/live", records[0]["live_url"])
+
+    def test_logs_all_streams_when_fewer_than_ten_exist(self) -> None:
+        with self.assertLogs("mixch-ranking-monitor", level="INFO") as captured:
+            log_top_ranking_snapshot(
+                [stream("111", 200, rank=1), stream("222", 180, rank=2)],
+                NOW,
+            )
+
+        data_lines = [line for line in captured.output if "RANKING_TOP10 " in line]
+        self.assertEqual(2, len(data_lines))
+
+
 class NightModeTests(unittest.TestCase):
     def test_night_time_boundaries_use_japan_time(self) -> None:
         self.assertFalse(_is_night_time(datetime(2026, 8, 8, 12, 59, tzinfo=timezone.utc)))
@@ -361,20 +414,24 @@ class NightModeTests(unittest.TestCase):
     def test_night_run_accumulates_without_immediate_notification(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.json"
+            night_now = datetime(2026, 8, 8, 13, 0, tzinfo=timezone.utc)
             with (
                 patch(
                     "src.mixch_monitor.fetch_ranking",
                     return_value=[stream("111", 150, "配信者A")],
                 ),
+                patch("src.mixch_monitor.log_top_ranking_snapshot") as ranking_log,
                 patch("src.mixch_monitor.send_stream_notifications") as immediate,
             ):
                 result = run(
                     config_for_state(path),
-                    now=datetime(2026, 8, 8, 13, 0, tzinfo=timezone.utc),
+                    now=night_now,
                 )
             state = load_state(path)
 
         self.assertEqual(0, result)
+        ranking_log.assert_called_once()
+        self.assertEqual(night_now, ranking_log.call_args.args[1])
         immediate.assert_not_called()
         self.assertIn("111", state["night_candidates"])
 
