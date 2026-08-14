@@ -2,7 +2,15 @@
   "metadata": {
     "last_heartbeat_at": "2026-08-12T09:13:09Z"
   },
-  "night_candidates": {},
+  "night_candidates": {
+    "18927394": {
+      "broadcaster_name": "りい#めいどりーみ",
+      "first_seen_at": "2026-08-14T13:09:32Z",
+      "last_seen_at": "2026-08-14T13:09:32Z",
+      "max_momentum": 167,
+      "url": "https://mixch.tv/u/18927394/live"
+    }
+  },
   "notifications": {
     "17959898": {
       "broadcaster_name": "あいり❤️K-1のみ確定❤️",
