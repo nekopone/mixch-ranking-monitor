@@ -2,43 +2,7 @@
   "metadata": {
     "last_heartbeat_at": "2026-08-12T09:13:09Z"
   },
-  "night_candidates": {
-    "18673781": {
-      "broadcaster_name": "あいね #マリ",
-      "first_seen_at": "2026-08-14T13:55:57Z",
-      "last_seen_at": "2026-08-14T13:55:57Z",
-      "max_momentum": 156,
-      "url": "https://mixch.tv/u/18673781/live"
-    },
-    "18724672": {
-      "broadcaster_name": "真愛#ｼﾙﾊﾞﾆｱ",
-      "first_seen_at": "2026-08-14T15:49:52Z",
-      "last_seen_at": "2026-08-14T15:49:52Z",
-      "max_momentum": 180,
-      "url": "https://mixch.tv/u/18724672/live"
-    },
-    "18927394": {
-      "broadcaster_name": "りい#めいどりーみ",
-      "first_seen_at": "2026-08-14T13:09:32Z",
-      "last_seen_at": "2026-08-14T13:19:52Z",
-      "max_momentum": 183,
-      "url": "https://mixch.tv/u/18927394/live"
-    },
-    "18950177": {
-      "broadcaster_name": "ミス東大2026 今飯田紀香",
-      "first_seen_at": "2026-08-14T14:21:47Z",
-      "last_seen_at": "2026-08-14T14:21:47Z",
-      "max_momentum": 186,
-      "url": "https://mixch.tv/u/18950177/live"
-    },
-    "18954672": {
-      "broadcaster_name": "ユナ",
-      "first_seen_at": "2026-08-14T14:37:15Z",
-      "last_seen_at": "2026-08-14T15:08:12Z",
-      "max_momentum": 172,
-      "url": "https://mixch.tv/u/18954672/live"
-    }
-  },
+  "night_candidates": {},
   "notifications": {
     "17959898": {
       "broadcaster_name": "あいり❤️K-1のみ確定❤️",
@@ -75,6 +39,18 @@
       "last_notified_at": "2026-08-13T07:43:13Z",
       "url": "https://mixch.tv/u/18642018/live"
     },
+    "18673781": {
+      "broadcaster_name": "あいね #マリ",
+      "last_notified_at": "2026-08-14T22:01:33Z",
+      "reason": "night_digest_processed",
+      "url": "https://mixch.tv/u/18673781/live"
+    },
+    "18724672": {
+      "broadcaster_name": "真愛#ｼﾙﾊﾞﾆｱ",
+      "last_notified_at": "2026-08-14T22:01:33Z",
+      "reason": "night_digest_processed",
+      "url": "https://mixch.tv/u/18724672/live"
+    },
     "18838049": {
       "broadcaster_name": "︎りらJCミスコン",
       "last_notified_at": "2026-08-12T11:58:47Z",
@@ -110,6 +86,12 @@
       "last_notified_at": "2026-08-12T22:20:05Z",
       "url": "https://mixch.tv/u/18923924/live"
     },
+    "18927394": {
+      "broadcaster_name": "りい#めいどりーみ",
+      "last_notified_at": "2026-08-14T22:01:33Z",
+      "reason": "night_digest_processed",
+      "url": "https://mixch.tv/u/18927394/live"
+    },
     "18927820": {
       "broadcaster_name": "あおIVIAD",
       "last_notified_at": "2026-08-13T10:18:52Z",
@@ -140,6 +122,12 @@
       "last_notified_at": "2026-08-14T06:14:40Z",
       "url": "https://mixch.tv/u/18948572/live"
     },
+    "18950177": {
+      "broadcaster_name": "ミス東大2026 今飯田紀香",
+      "last_notified_at": "2026-08-14T22:01:33Z",
+      "reason": "night_digest_processed",
+      "url": "https://mixch.tv/u/18950177/live"
+    },
     "18950410": {
       "broadcaster_name": "【ミス同志社】No.2 小野優華",
       "last_notified_at": "2026-08-12T11:33:02Z",
@@ -149,6 +137,12 @@
       "broadcaster_name": "るか",
       "last_notified_at": "2026-08-13T02:48:39Z",
       "url": "https://mixch.tv/u/18952318/live"
+    },
+    "18954672": {
+      "broadcaster_name": "ユナ",
+      "last_notified_at": "2026-08-14T22:01:33Z",
+      "reason": "night_digest_processed",
+      "url": "https://mixch.tv/u/18954672/live"
     },
     "18958790": {
       "broadcaster_name": "ゆずき",
