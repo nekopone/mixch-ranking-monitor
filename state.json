@@ -2,44 +2,20 @@
   "metadata": {
     "last_heartbeat_at": "2026-08-12T09:13:09Z"
   },
-  "night_candidates": {
+  "night_candidates": {},
+  "notifications": {
     "11185663": {
       "broadcaster_name": "べいべーあゆ【IRUYA",
-      "first_seen_at": "2026-08-15T15:48:58Z",
-      "last_seen_at": "2026-08-15T15:48:58Z",
-      "max_momentum": 244,
+      "last_notified_at": "2026-08-15T22:00:07Z",
+      "reason": "night_digest_processed",
       "url": "https://mixch.tv/u/11185663/live"
     },
     "17913238": {
       "broadcaster_name": "初日しおぴぇﾏﾄﾞﾘｰ",
-      "first_seen_at": "2026-08-15T14:36:41Z",
-      "last_seen_at": "2026-08-15T14:36:41Z",
-      "max_momentum": 233,
+      "last_notified_at": "2026-08-15T22:00:07Z",
+      "reason": "night_digest_processed",
       "url": "https://mixch.tv/u/17913238/live"
     },
-    "18947594": {
-      "broadcaster_name": "【龍谷】No7松田鈴",
-      "first_seen_at": "2026-08-15T16:04:23Z",
-      "last_seen_at": "2026-08-15T16:04:23Z",
-      "max_momentum": 164,
-      "url": "https://mixch.tv/u/18947594/live"
-    },
-    "18948572": {
-      "broadcaster_name": "めい",
-      "first_seen_at": "2026-08-15T14:05:48Z",
-      "last_seen_at": "2026-08-15T14:26:21Z",
-      "max_momentum": 314,
-      "url": "https://mixch.tv/u/18948572/live"
-    },
-    "18965126": {
-      "broadcaster_name": "ゆうり",
-      "first_seen_at": "2026-08-15T17:21:41Z",
-      "last_seen_at": "2026-08-15T17:21:41Z",
-      "max_momentum": 179,
-      "url": "https://mixch.tv/u/18965126/live"
-    }
-  },
-  "notifications": {
     "17959898": {
       "broadcaster_name": "あいり❤️K-1のみ確定❤️",
       "last_notified_at": "2026-08-14T12:17:56Z",
@@ -183,9 +159,16 @@
       "last_notified_at": "2026-08-12T12:14:11Z",
       "url": "https://mixch.tv/u/18947060/live"
     },
+    "18947594": {
+      "broadcaster_name": "【龍谷】No7松田鈴",
+      "last_notified_at": "2026-08-15T22:00:07Z",
+      "reason": "night_digest_processed",
+      "url": "https://mixch.tv/u/18947594/live"
+    },
     "18948572": {
       "broadcaster_name": "めい",
-      "last_notified_at": "2026-08-14T06:14:40Z",
+      "last_notified_at": "2026-08-15T22:00:07Z",
+      "reason": "night_digest_processed",
       "url": "https://mixch.tv/u/18948572/live"
     },
     "18950177": {
@@ -249,6 +232,12 @@
       "broadcaster_name": "赤ちゃん",
       "last_notified_at": "2026-08-15T10:13:44Z",
       "url": "https://mixch.tv/u/18964700/live"
+    },
+    "18965126": {
+      "broadcaster_name": "ゆうり",
+      "last_notified_at": "2026-08-15T22:00:07Z",
+      "reason": "night_digest_processed",
+      "url": "https://mixch.tv/u/18965126/live"
     }
   },
   "version": 1
