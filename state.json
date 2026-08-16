@@ -3,6 +3,13 @@
     "last_heartbeat_at": "2026-08-12T09:13:09Z"
   },
   "night_candidates": {
+    "18014848": {
+      "broadcaster_name": "前日DXコーラ",
+      "first_seen_at": "2026-08-16T14:14:45Z",
+      "last_seen_at": "2026-08-16T14:14:45Z",
+      "max_momentum": 156,
+      "url": "https://mixch.tv/u/18014848/live"
+    },
     "18949965": {
       "broadcaster_name": "【ミス同志社】No.3山崎真鈴",
       "first_seen_at": "2026-08-16T13:18:07Z",
