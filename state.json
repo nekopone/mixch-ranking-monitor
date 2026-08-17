@@ -3,6 +3,13 @@
     "last_heartbeat_at": "2026-08-12T09:13:09Z"
   },
   "night_candidates": {
+    "17373942": {
+      "broadcaster_name": "うえきあやか",
+      "first_seen_at": "2026-08-17T14:39:23Z",
+      "last_seen_at": "2026-08-17T14:39:23Z",
+      "max_momentum": 156,
+      "url": "https://mixch.tv/u/17373942/live"
+    },
     "18014848": {
       "broadcaster_name": "日DXコーラ",
       "first_seen_at": "2026-08-17T13:32:09Z",
