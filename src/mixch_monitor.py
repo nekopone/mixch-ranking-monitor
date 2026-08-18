@@ -29,7 +29,20 @@ LOGGER = logging.getLogger("mixch-ranking-monitor")
 
 DEFAULT_MONITOR_URL = "https://live-ranking.com/v/mixch"
 DEFAULT_FALLBACK_MONITOR_URL = "https://ikioi-ranking.com/v/mixch"
-DEFAULT_BLOCKED_USER_IDS = frozenset({"14082684"})
+# 通知しない配信者の初期リスト。
+#
+# 配信者名は変更できるため、ここでは名前ではなくMixChannelのユーザーIDを
+# 固定で登録する。Repository variableのBLOCKED_USER_IDSは、この初期リストへ
+# 追加する仕組みなので、既存の設定を消さずに個別追加もできる。
+DEFAULT_BLOCKED_USER_IDS = frozenset(
+    {
+        "14082684",  # 既存の初期ブロック対象
+        "17373942",  # うえきあやか
+        "18014848",  # 日DXコーラ
+        "18504420",  # のうみくん#ﾚｷﾞｭﾗｰﾓﾃﾞ
+        "18674264",  # こうぐちまﾙ
+    }
+)
 DEFAULT_THRESHOLD = 150
 DEFAULT_COOLDOWN_HOURS = 12.0
 DEFAULT_ERROR_COOLDOWN_HOURS = 6.0
