@@ -639,7 +639,18 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(
             "https://ikioi-ranking.com/v/mixch", config.fallback_monitor_url
         )
-        self.assertEqual(frozenset({"14082684"}), config.blocked_user_ids)
+        self.assertEqual(
+            frozenset(
+                {
+                    "14082684",
+                    "17373942",  # うえきあやか
+                    "18014848",  # 日DXコーラ
+                    "18504420",  # のうみくん#ﾚｷﾞｭﾗｰﾓﾃﾞ
+                    "18674264",  # こうぐちまﾙ
+                }
+            ),
+            config.blocked_user_ids,
+        )
 
     def test_repository_variables_override_defaults(self) -> None:
         with patch.dict(
@@ -657,7 +668,17 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(275, config.momentum_threshold)
         self.assertEqual(8, config.cooldown_hours)
         self.assertEqual(
-            frozenset({"14082684", "18844927", "18856007"}),
+            frozenset(
+                {
+                    "14082684",
+                    "17373942",
+                    "18014848",
+                    "18504420",
+                    "18674264",
+                    "18844927",
+                    "18856007",
+                }
+            ),
             config.blocked_user_ids,
         )
 
