@@ -333,6 +333,11 @@
       "last_notified_at": "2026-08-18T10:02:36Z",
       "reason": "night_digest_processed",
       "url": "https://mixch.tv/u/18966655/live"
+    },
+    "18967167": {
+      "broadcaster_name": "みゆ",
+      "last_notified_at": "2026-08-18T10:07:47Z",
+      "url": "https://mixch.tv/u/18967167/live"
     }
   },
   "version": 1
