@@ -2,80 +2,29 @@
   "metadata": {
     "last_heartbeat_at": "2026-08-19T09:13:20Z"
   },
-  "night_candidates": {
+  "night_candidates": {},
+  "notifications": {
     "11185663": {
       "broadcaster_name": "べいべーあゆ【IRUYA",
-      "first_seen_at": "2026-08-19T15:57:32Z",
-      "last_seen_at": "2026-08-19T15:57:32Z",
-      "max_momentum": 161,
+      "last_notified_at": "2026-08-19T22:00:12Z",
+      "reason": "night_digest_processed",
       "url": "https://mixch.tv/u/11185663/live"
     },
     "15477822": {
       "broadcaster_name": "ゆゆ#",
-      "first_seen_at": "2026-08-19T14:08:41Z",
-      "last_seen_at": "2026-08-19T14:08:41Z",
-      "max_momentum": 154,
+      "last_notified_at": "2026-08-19T22:00:12Z",
+      "reason": "night_digest_processed",
       "url": "https://mixch.tv/u/15477822/live"
     },
     "16810478": {
       "broadcaster_name": "のなびﾁｬﾏｶﾞﾙｱ3ﾏﾃ",
-      "first_seen_at": "2026-08-19T14:55:21Z",
-      "last_seen_at": "2026-08-19T14:55:21Z",
-      "max_momentum": 238,
-      "url": "https://mixch.tv/u/16810478/live"
-    },
-    "16903258": {
-      "broadcaster_name": "サクラバシ919 公式",
-      "first_seen_at": "2026-08-19T15:05:44Z",
-      "last_seen_at": "2026-08-19T15:05:44Z",
-      "max_momentum": 167,
-      "url": "https://mixch.tv/u/16903258/live"
-    },
-    "17950307": {
-      "broadcaster_name": "春夏冬きゃろﾐｸﾁｬﾓﾃﾞﾙAD",
-      "first_seen_at": "2026-08-19T13:32:25Z",
-      "last_seen_at": "2026-08-19T15:31:41Z",
-      "max_momentum": 249,
-      "url": "https://mixch.tv/u/17950307/live"
-    },
-    "18319157": {
-      "broadcaster_name": "mio#",
-      "first_seen_at": "2026-08-19T13:01:17Z",
-      "last_seen_at": "2026-08-19T13:01:17Z",
-      "max_momentum": 270,
-      "url": "https://mixch.tv/u/18319157/live"
-    },
-    "18750723": {
-      "broadcaster_name": "くるみ#egg専属モデルAD",
-      "first_seen_at": "2026-08-19T15:36:51Z",
-      "last_seen_at": "2026-08-19T15:36:51Z",
-      "max_momentum": 249,
-      "url": "https://mixch.tv/u/18750723/live"
-    },
-    "18968140": {
-      "broadcaster_name": "み",
-      "first_seen_at": "2026-08-19T13:58:21Z",
-      "last_seen_at": "2026-08-19T15:00:35Z",
-      "max_momentum": 285,
-      "url": "https://mixch.tv/u/18968140/live"
-    }
-  },
-  "notifications": {
-    "11185663": {
-      "broadcaster_name": "べいべーあゆ【IRUYA",
-      "last_notified_at": "2026-08-15T22:00:07Z",
-      "reason": "night_digest_processed",
-      "url": "https://mixch.tv/u/11185663/live"
-    },
-    "16810478": {
-      "broadcaster_name": "のなびﾁｬﾏｶﾞﾙｱ3ﾏﾃ",
-      "last_notified_at": "2026-08-18T22:02:55Z",
+      "last_notified_at": "2026-08-19T22:00:12Z",
       "reason": "night_digest_processed",
       "url": "https://mixch.tv/u/16810478/live"
     },
     "16903258": {
       "broadcaster_name": "サクラバシ919 公式",
-      "last_notified_at": "2026-08-18T22:02:55Z",
+      "last_notified_at": "2026-08-19T22:00:12Z",
       "reason": "night_digest_processed",
       "url": "https://mixch.tv/u/16903258/live"
     },
@@ -119,7 +68,7 @@
     },
     "17950307": {
       "broadcaster_name": "春夏冬きゃろﾐｸﾁｬﾓﾃﾞﾙAD",
-      "last_notified_at": "2026-08-18T22:02:55Z",
+      "last_notified_at": "2026-08-19T22:00:12Z",
       "reason": "night_digest_processed",
       "url": "https://mixch.tv/u/17950307/live"
     },
@@ -139,6 +88,12 @@
       "last_notified_at": "2026-08-18T22:02:55Z",
       "reason": "night_digest_processed",
       "url": "https://mixch.tv/u/18025022/live"
+    },
+    "18319157": {
+      "broadcaster_name": "mio#",
+      "last_notified_at": "2026-08-19T22:00:12Z",
+      "reason": "night_digest_processed",
+      "url": "https://mixch.tv/u/18319157/live"
     },
     "18361692": {
       "broadcaster_name": "わたちゃ“裏MG",
@@ -211,6 +166,12 @@
       "last_notified_at": "2026-08-14T22:01:33Z",
       "reason": "night_digest_processed",
       "url": "https://mixch.tv/u/18724672/live"
+    },
+    "18750723": {
+      "broadcaster_name": "くるみ#egg専属モデルAD",
+      "last_notified_at": "2026-08-19T22:00:12Z",
+      "reason": "night_digest_processed",
+      "url": "https://mixch.tv/u/18750723/live"
     },
     "18788697": {
       "broadcaster_name": "あやなjcミスコン2026",
@@ -480,6 +441,12 @@
       "broadcaster_name": "みゆ",
       "last_notified_at": "2026-08-18T10:07:47Z",
       "url": "https://mixch.tv/u/18967167/live"
+    },
+    "18968140": {
+      "broadcaster_name": "み",
+      "last_notified_at": "2026-08-19T22:00:12Z",
+      "reason": "night_digest_processed",
+      "url": "https://mixch.tv/u/18968140/live"
     }
   },
   "version": 1
