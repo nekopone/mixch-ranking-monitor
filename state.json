@@ -2,43 +2,7 @@
   "metadata": {
     "last_heartbeat_at": "2026-08-19T09:13:20Z"
   },
-  "night_candidates": {
-    "15492927": {
-      "broadcaster_name": "さあ6周年記念",
-      "first_seen_at": "2026-08-21T15:14:43Z",
-      "last_seen_at": "2026-08-21T15:35:23Z",
-      "max_momentum": 278,
-      "url": "https://mixch.tv/u/15492927/live"
-    },
-    "16903258": {
-      "broadcaster_name": "サクラバシ919 公式",
-      "first_seen_at": "2026-08-21T14:12:30Z",
-      "last_seen_at": "2026-08-21T15:09:33Z",
-      "max_momentum": 262,
-      "url": "https://mixch.tv/u/16903258/live"
-    },
-    "18108780": {
-      "broadcaster_name": "がいい立花もえ‍♀️六本木AD",
-      "first_seen_at": "2026-08-21T13:41:23Z",
-      "last_seen_at": "2026-08-21T13:41:23Z",
-      "max_momentum": 184,
-      "url": "https://mixch.tv/u/18108780/live"
-    },
-    "18968348": {
-      "broadcaster_name": "ここ",
-      "first_seen_at": "2026-08-21T14:17:43Z",
-      "last_seen_at": "2026-08-21T14:22:56Z",
-      "max_momentum": 258,
-      "url": "https://mixch.tv/u/18968348/live"
-    },
-    "18969502": {
-      "broadcaster_name": "ここみ",
-      "first_seen_at": "2026-08-21T13:15:25Z",
-      "last_seen_at": "2026-08-21T14:07:19Z",
-      "max_momentum": 440,
-      "url": "https://mixch.tv/u/18969502/live"
-    }
-  },
+  "night_candidates": {},
   "notifications": {
     "11185663": {
       "broadcaster_name": "べいべーあゆ【IRUYA",
@@ -52,6 +16,12 @@
       "reason": "night_digest_processed",
       "url": "https://mixch.tv/u/15477822/live"
     },
+    "15492927": {
+      "broadcaster_name": "さあ6周年記念",
+      "last_notified_at": "2026-08-21T22:03:42Z",
+      "reason": "night_digest_processed",
+      "url": "https://mixch.tv/u/15492927/live"
+    },
     "16810478": {
       "broadcaster_name": "のなびﾁｬﾏｶﾞﾙｱ3ﾏﾃ",
       "last_notified_at": "2026-08-20T22:04:45Z",
@@ -60,7 +30,7 @@
     },
     "16903258": {
       "broadcaster_name": "サクラバシ919 公式",
-      "last_notified_at": "2026-08-19T22:00:12Z",
+      "last_notified_at": "2026-08-21T22:03:42Z",
       "reason": "night_digest_processed",
       "url": "https://mixch.tv/u/16903258/live"
     },
@@ -131,6 +101,12 @@
       "last_notified_at": "2026-08-18T22:02:55Z",
       "reason": "night_digest_processed",
       "url": "https://mixch.tv/u/18025022/live"
+    },
+    "18108780": {
+      "broadcaster_name": "がいい立花もえ‍♀️六本木AD",
+      "last_notified_at": "2026-08-21T22:03:42Z",
+      "reason": "night_digest_processed",
+      "url": "https://mixch.tv/u/18108780/live"
     },
     "18296626": {
       "broadcaster_name": "女王まりあ",
@@ -533,6 +509,12 @@
       "reason": "night_digest_processed",
       "url": "https://mixch.tv/u/18968140/live"
     },
+    "18968348": {
+      "broadcaster_name": "ここ",
+      "last_notified_at": "2026-08-21T22:03:42Z",
+      "reason": "night_digest_processed",
+      "url": "https://mixch.tv/u/18968348/live"
+    },
     "18969242": {
       "broadcaster_name": "HINA",
       "last_notified_at": "2026-08-21T12:23:39Z",
@@ -542,6 +524,12 @@
       "broadcaster_name": "ミリー",
       "last_notified_at": "2026-08-21T11:21:30Z",
       "url": "https://mixch.tv/u/18969450/live"
+    },
+    "18969502": {
+      "broadcaster_name": "ここみ",
+      "last_notified_at": "2026-08-21T22:03:42Z",
+      "reason": "night_digest_processed",
+      "url": "https://mixch.tv/u/18969502/live"
     }
   },
   "version": 1
